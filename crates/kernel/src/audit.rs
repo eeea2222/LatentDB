@@ -44,6 +44,20 @@ pub(crate) fn event_from(
     }
 }
 
+/// Public builder used by the AI crate to construct AI-related audit events
+/// (retrieval, recommendation, action). The resulting event is written via
+/// [`Kernel::audit`]. Keeps audit construction uniform across crates.
+pub fn event_from_public(
+    ctx: &AuthContext,
+    action: &str,
+    target_object_type: Option<&str>,
+    target_record_id: Option<&str>,
+    before: Option<Value>,
+    after: Option<Value>,
+) -> AuditEvent {
+    event_from(ctx, action, target_object_type, target_record_id, before, after)
+}
+
 fn actor_type_str(a: ActorType) -> &'static str {
     match a {
         ActorType::User => "user",

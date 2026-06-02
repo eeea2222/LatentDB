@@ -14,6 +14,7 @@ use latentdb_contracts::{
     AuditQuery, AuthContext, ListResponse, NewRecord, ObjectTypeDef, PermissionGrant, Record,
     RecordFilter, RecordPatch, Source, WorkflowDef,
 };
+use latentdb_kernel::analytics::{Dashboard, ReportDef, ReportResult};
 use latentdb_kernel::approval::Approval;
 use latentdb_kernel::identity::{NewApiKey, User};
 use latentdb_kernel::record::RelationEdge;
@@ -21,12 +22,14 @@ use latentdb_kernel::task::Task;
 use latentdb_kernel::tenant::{BootstrapResult, Organization, Tenant};
 use latentdb_kernel::transition::TransitionResult;
 use latentdb_kernel::Kernel;
+use latentdb_ai::{action, AgentAction, AiAnswer, AiEngine};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 #[derive(Clone)]
 pub struct AppState {
     pub kernel: Kernel,
+    pub ai: AiEngine,
 }
 
 /// Build the full application router.
@@ -65,6 +68,20 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/approvals/:id", get(get_approval))
         .route("/v1/approvals/:id/decide", post(decide_approval))
         .route("/v1/audit", get(query_audit))
+        .route("/v1/reports", get(list_reports).post(save_report))
+        .route("/v1/reports/run", post(run_report_adhoc))
+        .route("/v1/reports/:key/run", get(run_report))
+        .route("/v1/dashboards", get(list_dashboards).post(save_dashboard))
+        .route("/v1/dashboards/:key", get(get_dashboard))
+        // --- AI / agents ---
+        .route("/v1/ai/ask", post(ai_ask))
+        .route("/v1/ai/bi/ask", post(ai_bi_ask))
+        .route("/v1/ai/records/:id/summary", post(ai_summarize))
+        .route("/v1/ai/agents/finance/cashflow-risk", post(ai_finance))
+        .route("/v1/ai/agents/procurement/low-stock", post(ai_procurement))
+        .route("/v1/ai/agents/sales/deal-risk", post(ai_sales))
+        .route("/v1/ai/actions/dry-run", post(ai_dry_run))
+        .route("/v1/ai/actions/execute", post(ai_execute))
         .with_state(state)
 }
 
@@ -624,6 +641,133 @@ async fn query_audit(
         offset: p.offset,
     };
     Ok(Json(s.kernel.audit_query(&ctx, &q).await?))
+}
+
+// ----------------------------------------------------------------------------
+// Reports, dashboards (BI)
+// ----------------------------------------------------------------------------
+
+async fn list_reports(State(s): State<AppState>, Auth(ctx): Auth) -> ApiJson<Vec<ReportDef>> {
+    Ok(Json(s.kernel.list_reports(&ctx).await?))
+}
+
+async fn save_report(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Json(def): Json<ReportDef>,
+) -> ApiJson<ReportDef> {
+    Ok(Json(s.kernel.save_report(&ctx, &def).await?))
+}
+
+async fn run_report(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Path(key): Path<String>,
+) -> ApiJson<ReportResult> {
+    Ok(Json(s.kernel.run_report(&ctx, &key).await?))
+}
+
+async fn run_report_adhoc(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Json(def): Json<ReportDef>,
+) -> ApiJson<ReportResult> {
+    Ok(Json(s.kernel.run_report_def(&ctx, &def).await?))
+}
+
+async fn list_dashboards(State(s): State<AppState>, Auth(ctx): Auth) -> ApiJson<Vec<Dashboard>> {
+    Ok(Json(s.kernel.list_dashboards(&ctx).await?))
+}
+
+async fn save_dashboard(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Json(dash): Json<Dashboard>,
+) -> ApiJson<Dashboard> {
+    Ok(Json(s.kernel.save_dashboard(&ctx, &dash).await?))
+}
+
+async fn get_dashboard(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Path(key): Path<String>,
+) -> ApiJson<Dashboard> {
+    Ok(Json(s.kernel.get_dashboard(&ctx, &key).await?))
+}
+
+// ----------------------------------------------------------------------------
+// AI / agents
+// ----------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct AskReq {
+    question: String,
+    #[serde(default)]
+    object_types: Vec<String>,
+}
+
+async fn ai_ask(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<AskReq>,
+) -> ApiJson<AiAnswer> {
+    Ok(Json(s.ai.agents().ask(&s.kernel, &ctx, &req.question, &req.object_types).await?))
+}
+
+#[derive(Deserialize)]
+struct BiAskReq {
+    question: String,
+}
+
+async fn ai_bi_ask(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<BiAskReq>,
+) -> ApiJson<AiAnswer> {
+    Ok(Json(s.ai.agents().bi_answer(&s.kernel, &ctx, &req.question).await?))
+}
+
+async fn ai_summarize(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+) -> ApiJson<AiAnswer> {
+    Ok(Json(s.ai.agents().summarize_record(&s.kernel, &ctx, &id).await?))
+}
+
+async fn ai_finance(State(s): State<AppState>, Auth(ctx): Auth) -> ApiJson<AiAnswer> {
+    Ok(Json(s.ai.agents().finance_cashflow_risk(&s.kernel, &ctx).await?))
+}
+
+async fn ai_procurement(State(s): State<AppState>, Auth(ctx): Auth) -> ApiJson<AiAnswer> {
+    Ok(Json(s.ai.agents().procurement_low_stock(&s.kernel, &ctx).await?))
+}
+
+async fn ai_sales(State(s): State<AppState>, Auth(ctx): Auth) -> ApiJson<AiAnswer> {
+    Ok(Json(s.ai.agents().sales_deal_risk(&s.kernel, &ctx).await?))
+}
+
+async fn ai_dry_run(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Json(act): Json<AgentAction>,
+) -> ApiJson<action::ActionPlan> {
+    Ok(Json(latentdb_ai::dry_run(&s.kernel, &ctx, &act).await?))
+}
+
+#[derive(Deserialize)]
+struct ExecuteReq {
+    action: AgentAction,
+    #[serde(default)]
+    approved: bool,
+}
+
+async fn ai_execute(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<ExecuteReq>,
+) -> ApiJson<Value> {
+    Ok(Json(latentdb_ai::execute(&s.kernel, &ctx, &req.action, req.approved).await?))
 }
 
 // Keep `AuthContext` import meaningful for downstream phases.

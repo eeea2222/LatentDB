@@ -19,7 +19,8 @@ pub async fn build_state() -> anyhow::Result<AppState> {
     let kernel = Kernel::open(StoreConfig::from_env(), flags)
         .await
         .map_err(|e| anyhow::anyhow!("kernel open failed: {}", e.message))?;
-    Ok(AppState { kernel })
+    let ai = latentdb_ai::AiEngine::from_env();
+    Ok(AppState { kernel, ai })
 }
 
 /// Boot the HTTP server.

@@ -407,6 +407,60 @@ impl Kernel {
         Ok(edges)
     }
 
+    /// Permission-aware scan of all matching records of a type (no pagination),
+    /// projected for field-level visibility. Used by the analytics layer so that
+    /// metrics and reports never aggregate data the caller cannot see.
+    pub(crate) async fn scan_records(
+        &self,
+        ctx: &AuthContext,
+        object_type: &str,
+        filter: &RecordFilter,
+    ) -> latentdb_contracts::Result<Vec<Record>> {
+        let resource = resource_for(object_type);
+        self.authorize(ctx, Action::Search, &resource, None).await?;
+        let otype = self.load_object_type(&ctx.tenant_id, object_type).await?;
+        let grants = self.effective_grants(ctx).await?;
+
+        let mut sql = String::from("SELECT * FROM records WHERE tenant_id = ? AND object_type = ?");
+        if !filter.include_archived {
+            sql.push_str(" AND lifecycle = 'active'");
+        }
+        sql.push_str(" ORDER BY created_at DESC LIMIT ?");
+        let rows = sqlx::query(&sql)
+            .bind(&ctx.tenant_id)
+            .bind(object_type)
+            .bind(MAX_SCAN)
+            .fetch_all(self.pool())
+            .await
+            .map_err(map_db_err)?;
+
+        let mut records: Vec<Record> = rows
+            .iter()
+            .map(row_to_record)
+            .collect::<latentdb_contracts::Result<Vec<_>>>()?;
+        records.retain(|r| self.grants_allow(&grants, ctx, Action::Read, &resource, Some(r)));
+        for fclause in &filter.filters {
+            records.retain(|r| {
+                r.data
+                    .get(&fclause.field)
+                    .map(|v| crate::rbac::value_matches(v, fclause.op, &fclause.value))
+                    .unwrap_or(false)
+            });
+        }
+        let full = ctx.is_system() || ctx.is_platform_admin;
+        Ok(records
+            .into_iter()
+            .map(|r| {
+                if full {
+                    r
+                } else {
+                    let read_grants = self.applicable_read_grants(&grants, ctx, &resource, Some(&r));
+                    r.project_fields(|k| crate::rbac::field_permitted(&read_grants, &otype, k))
+                }
+            })
+            .collect())
+    }
+
     /// Internal: load a raw record (no auth). Callers must authorize.
     pub(crate) async fn load_record(
         &self,

@@ -50,6 +50,7 @@ pub fn system_roles() -> Vec<Role> {
                 PermissionGrant::new(Action::Read, "organization", Scope::Tenant),
                 PermissionGrant::new(Action::Read, "report", Scope::Org),
                 PermissionGrant::new(Action::Read, "metric", Scope::Org),
+                PermissionGrant::new(Action::Read, "dashboard", Scope::Org),
             ],
         },
     ]

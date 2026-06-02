@@ -16,6 +16,7 @@
 mod crypto;
 mod store;
 
+pub mod analytics;
 pub mod approval;
 pub mod audit;
 pub mod auth;

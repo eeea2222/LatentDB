@@ -23,7 +23,7 @@ async fn test_state() -> AppState {
         .bootstrap_tenant("Acme", "acme", "admin@acme.com", "Admin", "pw-123456")
         .await
         .unwrap();
-    AppState { kernel }
+    AppState { kernel, ai: latentdb_ai::AiEngine::default() }
 }
 
 async fn call(

@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Real HTTP calls to an OpenAI-compatible endpoint (OpenAI / LM Studio / Ollama).
+# Off by default: the deterministic mock provider keeps the platform fully
+# offline and AI optional.
+openai = ["dep:reqwest"]
+
 [dependencies]
 latentdb-contracts.workspace = true
 latentdb-kernel.workspace = true
@@ -11,3 +18,7 @@ serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
