@@ -1,0 +1,19 @@
+[package]
+name = "latentdb-accel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Optional acceleration backends. Each is additive and must never be required
+# for the platform to build or boot.
+datafusion = []
+triton = []
+burn = []
+webgpu = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
