@@ -841,6 +841,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "latentdb-contracts",
+ "once_cell",
  "rand 0.8.6",
  "serde",
  "serde_json",

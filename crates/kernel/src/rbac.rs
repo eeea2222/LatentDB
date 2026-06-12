@@ -259,8 +259,7 @@ impl Kernel {
             return Ok(vec![]);
         }
         // Build a parameterized IN clause for the role keys.
-        let placeholders = std::iter::repeat("?")
-            .take(ctx.role_keys.len())
+        let placeholders = std::iter::repeat_n("?", ctx.role_keys.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(

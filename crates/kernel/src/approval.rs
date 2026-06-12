@@ -105,6 +105,19 @@ impl Kernel {
         if approval.status != "pending" {
             return Err(ApiError::failed_precondition("approval already decided"));
         }
+        // Separation of duties (flag-gated): the requester may not decide
+        // their own approval. System/platform actors are exempt.
+        if self.flags().enable_approval_separation_of_duties
+            && approval.requested_by == ctx.actor_id
+            && !ctx.is_system()
+            && !ctx.is_platform_admin
+        {
+            self.audit_denial(ctx, "approve", "approval", Some(approval_id))
+                .await;
+            return Err(ApiError::forbidden(
+                "the requester cannot decide their own approval",
+            ));
+        }
 
         let object_type = approval.related_object_type.clone().unwrap_or_default();
         let resource = format!("object:{object_type}");

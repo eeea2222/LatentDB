@@ -52,6 +52,20 @@ pub struct NewApiKey {
     pub token: String,
 }
 
+/// Sanity-check an email address: single `@` with non-empty local/domain parts,
+/// a dot in the domain, no whitespace, and a bounded length (RFC 5321 limit).
+pub(crate) fn validate_email(email: &str) -> latentdb_contracts::Result<()> {
+    let ok = email.len() <= 254
+        && !email.chars().any(char::is_whitespace)
+        && matches!(email.split('@').collect::<Vec<_>>().as_slice(),
+            [local, domain] if !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.'));
+    if ok {
+        Ok(())
+    } else {
+        Err(ApiError::validation("invalid email address"))
+    }
+}
+
 impl Kernel {
     /// Resolve the role keys assigned to a principal (user or service account).
     pub(crate) async fn roles_for_principal(
@@ -83,13 +97,16 @@ impl Kernel {
     ) -> latentdb_contracts::Result<User> {
         self.authorize(ctx, Action::Configure, "admin:users", None)
             .await?;
+        let email = crate::auth::normalize_email(email);
+        validate_email(&email)?;
+        crate::crypto::validate_password_strength(password)?;
         let id = ids::new_id();
         let now = ids::now_rfc3339();
         let pw_hash = crate::crypto::hash_password(password)?;
 
         let mut tx = self.pool().begin().await.map_err(map_db_err)?;
         sqlx::query("INSERT INTO users (id, tenant_id, email, name, password_hash, status, is_platform_admin, default_org_id, created_at) VALUES (?,?,?,?,?,?,?,?,?)")
-            .bind(&id).bind(&ctx.tenant_id).bind(email).bind(name)
+            .bind(&id).bind(&ctx.tenant_id).bind(&email).bind(name)
             .bind(&pw_hash).bind("active").bind(0i64).bind(&ctx.org_id).bind(&now)
             .execute(&mut *tx).await.map_err(map_db_err)?;
         for key in role_keys {
@@ -112,7 +129,7 @@ impl Kernel {
         Ok(User {
             id,
             tenant_id: ctx.tenant_id.clone(),
-            email: email.into(),
+            email,
             name: name.into(),
             status: "active".into(),
             is_platform_admin: false,
@@ -241,7 +258,31 @@ impl Kernel {
     ) -> latentdb_contracts::Result<NewApiKey> {
         self.authorize(ctx, Action::Configure, "admin:api_keys", None)
             .await?;
+        let principal_table = match principal_type {
+            "user" => "users",
+            "service_account" => "service_accounts",
+            other => {
+                return Err(ApiError::validation(format!(
+                    "invalid principal_type '{other}' (expected 'user' or 'service_account')"
+                )))
+            }
+        };
         let principal_id = principal_id.unwrap_or(&ctx.actor_id);
+        // The principal must be an active member of the caller's tenant — a key
+        // can never be minted for an id outside the tenant boundary.
+        let exists = sqlx::query(&format!(
+            "SELECT 1 FROM {principal_table} WHERE tenant_id = ? AND id = ? AND status = 'active'"
+        ))
+        .bind(&ctx.tenant_id)
+        .bind(principal_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(map_db_err)?;
+        if exists.is_none() {
+            return Err(ApiError::validation(
+                "principal not found in this tenant or not active",
+            ));
+        }
         let id = ids::new_id();
         let now = ids::now_rfc3339();
         let (token, hash) = crate::crypto::new_token("ldb_");
@@ -276,6 +317,55 @@ impl Kernel {
             },
             token,
         })
+    }
+
+    /// Enable or disable a user. Disabling immediately revokes all of the
+    /// user's sessions (their API keys are refused at verification time because
+    /// the principal is no longer active). Requires `configure` on `admin:users`.
+    pub async fn set_user_status(
+        &self,
+        ctx: &AuthContext,
+        user_id: &str,
+        status: &str,
+    ) -> latentdb_contracts::Result<User> {
+        self.authorize(ctx, Action::Configure, "admin:users", None)
+            .await?;
+        if !matches!(status, "active" | "disabled") {
+            return Err(ApiError::validation(
+                "status must be 'active' or 'disabled'",
+            ));
+        }
+        if user_id == ctx.actor_id && status != "active" {
+            return Err(ApiError::failed_precondition(
+                "you cannot disable your own account",
+            ));
+        }
+        let before = self.get_user(ctx, user_id).await?;
+
+        let mut tx = self.pool().begin().await.map_err(map_db_err)?;
+        sqlx::query("UPDATE users SET status = ? WHERE tenant_id = ? AND id = ?")
+            .bind(status)
+            .bind(&ctx.tenant_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db_err)?;
+        let ev = event_from(
+            ctx,
+            "user.set_status",
+            Some("user"),
+            Some(user_id),
+            Some(serde_json::json!({"status": before.status})),
+            Some(serde_json::json!({"status": status})),
+        );
+        insert_audit(&mut tx, &ev).await?;
+        tx.commit().await.map_err(map_db_err)?;
+
+        if status != "active" {
+            self.revoke_sessions_for_user(&ctx.tenant_id, user_id)
+                .await?;
+        }
+        self.get_user(ctx, user_id).await
     }
 
     /// Create a service account with roles. Returns the account; create an API

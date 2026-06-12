@@ -14,6 +14,7 @@
 //! Services are organized as `impl Kernel` blocks across the modules below.
 
 mod crypto;
+mod ratelimit;
 mod store;
 
 pub mod analytics;
@@ -30,12 +31,14 @@ pub mod record;
 pub mod task;
 pub mod tenant;
 pub mod transition;
+pub mod usage;
 pub mod workflow;
 
 pub use store::{Store, StoreConfig};
 
 use latentdb_contracts::FeatureFlags;
 use sqlx::SqlitePool;
+use std::sync::Arc;
 
 /// The kernel handle. Cloneable and cheap to share (the pool is reference
 /// counted). The `pool` field is deliberately private to this crate.
@@ -43,6 +46,7 @@ use sqlx::SqlitePool;
 pub struct Kernel {
     pool: SqlitePool,
     flags: FeatureFlags,
+    login_limiter: Arc<ratelimit::LoginLimiter>,
 }
 
 impl Kernel {
@@ -55,7 +59,11 @@ impl Kernel {
     ) -> latentdb_contracts::Result<Self> {
         let pool = store::connect(&config).await?;
         store::migrate(&pool).await?;
-        Ok(Self { pool, flags })
+        Ok(Self {
+            pool,
+            flags,
+            login_limiter: Arc::new(ratelimit::LoginLimiter::default()),
+        })
     }
 
     /// Convenience: an in-memory kernel with default flags (used widely in tests).
@@ -80,5 +88,18 @@ impl Kernel {
             .await
             .map_err(store::map_db_err)?;
         Ok(())
+    }
+
+    /// Periodic housekeeping: purge expired/revoked sessions and stale
+    /// rate-limit windows. Safe to call from a background loop; each run is
+    /// best-effort and independent.
+    pub async fn run_housekeeping(&self) -> latentdb_contracts::Result<()> {
+        self.cleanup_expired_sessions().await?;
+        self.login_limiter.prune();
+        Ok(())
+    }
+
+    pub(crate) fn login_limiter(&self) -> &ratelimit::LoginLimiter {
+        &self.login_limiter
     }
 }

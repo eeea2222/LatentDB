@@ -120,15 +120,12 @@ impl Kernel {
         .await?;
         tx.commit().await.map_err(map_db_err)?;
 
-        Ok(Record {
+        let record = Record {
             id,
             object_type: new.object_type.clone(),
             tenant_id: ctx.tenant_id.clone(),
             org_id: ctx.org_id.clone(),
-            workspace_id: new
-                .workspace_id
-                .clone()
-                .or_else(|| ctx.workspace_id.clone()),
+            workspace_id,
             data,
             lifecycle: Lifecycle::Active,
             workflow_state,
@@ -136,7 +133,10 @@ impl Kernel {
             created_at: now.clone(),
             updated_at: now,
             archived_at: None,
-        })
+        };
+        // Project like any other read so defaults on restricted fields are not
+        // leaked back to a creator who cannot read them.
+        self.project_for_read(ctx, &record, &otype).await
     }
 
     /// Fetch a single record, enforcing record-level read permission and
@@ -156,7 +156,7 @@ impl Kernel {
         let otype = self
             .load_object_type(&ctx.tenant_id, &record.object_type)
             .await?;
-        Ok(self.project_for_read(ctx, &record, &otype).await?)
+        self.project_for_read(ctx, &record, &otype).await
     }
 
     /// Update a record's fields. Enforces update-time field permissions and
@@ -240,7 +240,7 @@ impl Kernel {
         tx.commit().await.map_err(map_db_err)?;
 
         record.updated_at = now;
-        Ok(self.project_for_read(ctx, &record, &otype).await?)
+        self.project_for_read(ctx, &record, &otype).await
     }
 
     /// Archive (soft-delete) a record.
@@ -616,7 +616,7 @@ pub(crate) fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> latentdb_contracts
     let data_json: String = row.try_get("data_json").map_err(map_db_err)?;
     let data: Map<String, Value> = serde_json::from_str(&data_json).unwrap_or_default();
     let lifecycle =
-        Lifecycle::from_str(&row.try_get::<String, _>("lifecycle").map_err(map_db_err)?);
+        Lifecycle::parse(&row.try_get::<String, _>("lifecycle").map_err(map_db_err)?);
     Ok(Record {
         id: row.try_get("id").map_err(map_db_err)?,
         object_type: row.try_get("object_type").map_err(map_db_err)?,

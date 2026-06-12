@@ -31,6 +31,10 @@ pub struct FeatureFlags {
     pub enable_advanced_permissions: bool,
     /// Track usage meters (API calls, storage, tokens, ...).
     pub enable_usage_metering: bool,
+    /// Enforce separation of duties on approvals: the requester of a gated
+    /// transition may not decide their own approval. Off by default so
+    /// single-admin tenants are not locked out of approval workflows.
+    pub enable_approval_separation_of_duties: bool,
 }
 
 impl Default for FeatureFlags {
@@ -49,6 +53,7 @@ impl Default for FeatureFlags {
             enable_agent_action_execution: true,
             enable_advanced_permissions: true,
             enable_usage_metering: true,
+            enable_approval_separation_of_duties: false,
         }
     }
 }
@@ -68,6 +73,7 @@ impl FeatureFlags {
             enable_agent_action_execution: false,
             enable_advanced_permissions: false,
             enable_usage_metering: false,
+            enable_approval_separation_of_duties: false,
         }
     }
 
@@ -103,6 +109,10 @@ impl FeatureFlags {
             enable_usage_metering: env_bool(
                 "LATENTDB_ENABLE_USAGE_METERING",
                 d.enable_usage_metering,
+            ),
+            enable_approval_separation_of_duties: env_bool(
+                "LATENTDB_ENABLE_APPROVAL_SEPARATION_OF_DUTIES",
+                d.enable_approval_separation_of_duties,
             ),
         }
     }

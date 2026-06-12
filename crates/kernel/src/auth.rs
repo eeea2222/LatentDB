@@ -27,12 +27,30 @@ pub struct LoginResult {
     pub is_platform_admin: bool,
 }
 
-const SESSION_TTL_DAYS: i64 = 30;
+const DEFAULT_SESSION_TTL_DAYS: i64 = 30;
+
+/// Session lifetime, configurable via `LATENTDB_SESSION_TTL_DAYS` (1..=365).
+fn session_ttl_days() -> i64 {
+    std::env::var("LATENTDB_SESSION_TTL_DAYS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .map(|d| d.clamp(1, 365))
+        .unwrap_or(DEFAULT_SESSION_TTL_DAYS)
+}
+
+/// Canonical form for stored/looked-up emails: trimmed + lowercased, so login
+/// is case-insensitive and a user cannot be shadowed by a case variant.
+pub(crate) fn normalize_email(email: &str) -> String {
+    email.trim().to_lowercase()
+}
 
 impl Kernel {
     /// Authenticate a user with tenant slug + email + password and issue a
     /// session. A generic error is returned for every failure mode so the
-    /// endpoint cannot be used to enumerate tenants or users.
+    /// endpoint cannot be used to enumerate tenants or users; the unknown-user
+    /// path burns the same Argon2 work as a real verification so response
+    /// timing does not leak account existence. Repeated failures per
+    /// tenant+email are rate limited, and every failed attempt is audited.
     pub async fn login(
         &self,
         tenant_slug: &str,
@@ -41,32 +59,59 @@ impl Kernel {
         request_id: &str,
         source: Source,
     ) -> latentdb_contracts::Result<LoginResult> {
-        let invalid = || ApiError::unauthorized("invalid credentials");
+        let tenant_slug = tenant_slug.trim();
+        let email = normalize_email(email);
+        let limiter_key = format!("{tenant_slug}|{email}");
+
+        if self.login_limiter().is_locked(&limiter_key) {
+            self.audit_login_failure(tenant_slug, &email, "rate_limited", request_id, source)
+                .await;
+            return Err(ApiError::new(
+                latentdb_contracts::ErrorCode::RateLimited,
+                "too many failed login attempts; try again later",
+            ));
+        }
 
         let tenant = sqlx::query("SELECT id FROM tenants WHERE slug = ? AND status = 'active'")
             .bind(tenant_slug)
             .fetch_optional(self.pool())
             .await
-            .map_err(map_db_err)?
-            .ok_or_else(invalid)?;
+            .map_err(map_db_err)?;
+        let Some(tenant) = tenant else {
+            crate::crypto::equalize_verify_timing(password);
+            return Err(self
+                .login_failure(&limiter_key, tenant_slug, &email, "unknown_tenant", request_id, source)
+                .await);
+        };
         let tenant_id: String = tenant.try_get("id").map_err(map_db_err)?;
 
         let user = sqlx::query("SELECT * FROM users WHERE tenant_id = ? AND email = ?")
             .bind(&tenant_id)
-            .bind(email)
+            .bind(&email)
             .fetch_optional(self.pool())
             .await
-            .map_err(map_db_err)?
-            .ok_or_else(invalid)?;
+            .map_err(map_db_err)?;
+        let Some(user) = user else {
+            crate::crypto::equalize_verify_timing(password);
+            return Err(self
+                .login_failure(&limiter_key, tenant_slug, &email, "unknown_user", request_id, source)
+                .await);
+        };
 
         let status: String = user.try_get("status").map_err(map_db_err)?;
         if status != "active" {
-            return Err(invalid());
+            crate::crypto::equalize_verify_timing(password);
+            return Err(self
+                .login_failure(&limiter_key, tenant_slug, &email, "user_inactive", request_id, source)
+                .await);
         }
         let pw_hash: String = user.try_get("password_hash").map_err(map_db_err)?;
         if !crate::crypto::verify_password(password, &pw_hash)? {
-            return Err(invalid());
+            return Err(self
+                .login_failure(&limiter_key, tenant_slug, &email, "bad_password", request_id, source)
+                .await);
         }
+        self.login_limiter().reset(&limiter_key);
 
         let user_id: String = user.try_get("id").map_err(map_db_err)?;
         let name: String = user.try_get("name").map_err(map_db_err)?;
@@ -82,7 +127,7 @@ impl Kernel {
 
         let (token, token_hash) = crate::crypto::new_token("lds_");
         let now = ids::now();
-        let expires = now + Duration::days(SESSION_TTL_DAYS);
+        let expires = now + Duration::days(session_ttl_days());
         let created_at = ids::to_rfc3339(now);
         let expires_at = ids::to_rfc3339(expires);
 
@@ -168,6 +213,9 @@ impl Kernel {
         let user_id: String = row.try_get("user_id").map_err(map_db_err)?;
         let org_id: String = row.try_get("org_id").map_err(map_db_err)?;
 
+        // A suspended tenant invalidates all of its credentials immediately.
+        self.require_tenant_active(&tenant_id).await?;
+
         let user = sqlx::query("SELECT is_platform_admin, status FROM users WHERE id = ?")
             .bind(&user_id)
             .fetch_optional(self.pool())
@@ -217,11 +265,31 @@ impl Kernel {
         let principal_type: String = row.try_get("principal_type").map_err(map_db_err)?;
         let key_id: String = row.try_get("id").map_err(map_db_err)?;
 
-        let actor_type = if principal_type == "user" {
-            ActorType::User
+        // A suspended tenant invalidates all of its credentials immediately.
+        self.require_tenant_active(&tenant_id).await?;
+
+        // The key is only as alive as the principal behind it: a disabled user
+        // or service account must not keep authenticating through old keys.
+        let (actor_type, principal_table) = if principal_type == "user" {
+            (ActorType::User, "users")
         } else {
-            ActorType::ServiceAccount
+            (ActorType::ServiceAccount, "service_accounts")
         };
+        let principal_status: Option<String> = sqlx::query(&format!(
+            "SELECT status FROM {principal_table} WHERE tenant_id = ? AND id = ?"
+        ))
+        .bind(&tenant_id)
+        .bind(&principal_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(map_db_err)?
+        .map(|r| r.try_get("status"))
+        .transpose()
+        .map_err(map_db_err)?;
+        if principal_status.as_deref() != Some("active") {
+            return Err(ApiError::unauthorized("api key principal is not active"));
+        }
+
         let role_keys = self.roles_for_principal(&tenant_id, &principal_id).await?;
 
         // Best-effort last-used stamp; not part of the auth decision.
@@ -280,5 +348,108 @@ impl Kernel {
             .await
             .map_err(map_db_err)?;
         Ok(report)
+    }
+
+    /// Record a failed login in the limiter and the audit log, returning the
+    /// generic credentials error. The audit row carries the failure reason so
+    /// operators can monitor brute-force activity, while the caller only ever
+    /// sees "invalid credentials".
+    async fn login_failure(
+        &self,
+        limiter_key: &str,
+        tenant_slug: &str,
+        email: &str,
+        reason: &'static str,
+        request_id: &str,
+        source: Source,
+    ) -> ApiError {
+        self.login_limiter().record_failure(limiter_key);
+        self.audit_login_failure(tenant_slug, email, reason, request_id, source)
+            .await;
+        ApiError::unauthorized("invalid credentials")
+    }
+
+    /// Best-effort audit of a failed login attempt. Tenant id may be unknown at
+    /// this point, so the slug is recorded instead.
+    async fn audit_login_failure(
+        &self,
+        tenant_slug: &str,
+        email: &str,
+        reason: &'static str,
+        request_id: &str,
+        source: Source,
+    ) {
+        let ctx = AuthContext {
+            actor_type: ActorType::User,
+            actor_id: "anonymous".to_string(),
+            tenant_id: format!("slug:{tenant_slug}"),
+            org_id: String::new(),
+            workspace_id: None,
+            role_keys: vec![],
+            is_platform_admin: false,
+            request_id: request_id.to_string(),
+            source,
+            agent_safety_level: None,
+        };
+        let mut ev = event_from(
+            &ctx,
+            "auth.login.failed",
+            Some("user"),
+            None,
+            None,
+            Some(serde_json::json!({"email": email})),
+        );
+        ev.reason = Some(reason.to_string());
+        let _ = self.audit(&ev).await;
+    }
+
+    /// Reject when the tenant is missing or not active. Used on every token
+    /// verification so suspending a tenant cuts off existing sessions and API
+    /// keys immediately, not just new logins.
+    pub(crate) async fn require_tenant_active(
+        &self,
+        tenant_id: &str,
+    ) -> latentdb_contracts::Result<()> {
+        let row = sqlx::query("SELECT status FROM tenants WHERE id = ?")
+            .bind(tenant_id)
+            .fetch_optional(self.pool())
+            .await
+            .map_err(map_db_err)?
+            .ok_or_else(|| ApiError::unauthorized("tenant not found"))?;
+        let status: String = row.try_get("status").map_err(map_db_err)?;
+        if status != "active" {
+            return Err(ApiError::unauthorized("tenant is not active"));
+        }
+        Ok(())
+    }
+
+    /// Revoke every session belonging to a user (e.g. when the user is
+    /// disabled or their password is reset). Returns the number revoked.
+    pub async fn revoke_sessions_for_user(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> latentdb_contracts::Result<u64> {
+        let res = sqlx::query(
+            "UPDATE sessions SET revoked = 1 WHERE tenant_id = ? AND user_id = ? AND revoked = 0",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .execute(self.pool())
+        .await
+        .map_err(map_db_err)?;
+        Ok(res.rows_affected())
+    }
+
+    /// Delete sessions that are expired or revoked so the table cannot grow
+    /// without bound. Called from periodic housekeeping.
+    pub async fn cleanup_expired_sessions(&self) -> latentdb_contracts::Result<u64> {
+        let now = ids::now_rfc3339();
+        let res = sqlx::query("DELETE FROM sessions WHERE revoked = 1 OR expires_at <= ?")
+            .bind(&now)
+            .execute(self.pool())
+            .await
+            .map_err(map_db_err)?;
+        Ok(res.rows_affected())
     }
 }

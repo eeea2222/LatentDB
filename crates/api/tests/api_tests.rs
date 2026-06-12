@@ -259,3 +259,130 @@ async fn validation_error_maps_to_422() {
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(b["error"]["code"], "validation");
 }
+
+/// A fresh state with no tenant provisioned (first-run scenario).
+async fn empty_state() -> AppState {
+    let kernel = Kernel::open(StoreConfig::memory(), FeatureFlags::default())
+        .await
+        .unwrap();
+    AppState {
+        kernel,
+        ai: latentdb_ai::AiEngine::default(),
+    }
+}
+
+#[tokio::test]
+async fn first_run_bootstrap_is_open_then_platform_admin_only() {
+    let state = empty_state().await;
+
+    // First run: no tenants exist, so bootstrap needs no credential.
+    let (s, b) = call(
+        &state,
+        "POST",
+        "/v1/bootstrap",
+        None,
+        Some(json!({
+            "name": "FirstCo", "slug": "firstco",
+            "admin_email": "admin@firstco.test", "admin_name": "Admin",
+            "admin_password": "pw-123456"
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "first-run bootstrap failed: {b}");
+    assert_eq!(b["tenant"]["slug"], "firstco");
+
+    // Second tenant without a token is rejected.
+    let (s, b) = call(
+        &state,
+        "POST",
+        "/v1/bootstrap",
+        None,
+        Some(json!({
+            "name": "SecondCo", "slug": "secondco",
+            "admin_email": "admin@secondco.test", "admin_name": "Admin",
+            "admin_password": "pw-123456"
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "expected 401: {b}");
+
+    // A tenant admin (not platform admin) is also rejected.
+    let (_, login) = call(
+        &state,
+        "POST",
+        "/v1/auth/login",
+        None,
+        Some(json!({"tenant": "firstco", "email": "admin@firstco.test", "password": "pw-123456"})),
+    )
+    .await;
+    let token = login["token"].as_str().unwrap();
+    let (s, _) = call(
+        &state,
+        "POST",
+        "/v1/bootstrap",
+        Some(token),
+        Some(json!({
+            "name": "SecondCo", "slug": "secondco",
+            "admin_email": "admin@secondco.test", "admin_name": "Admin",
+            "admin_password": "pw-123456"
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn responses_carry_security_headers_and_request_id() {
+    let state = test_state().await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/healthz")
+        .header("x-request-id", "req-abc-123")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let h = resp.headers();
+    assert_eq!(h.get("x-request-id").unwrap(), "req-abc-123");
+    assert_eq!(h.get("x-content-type-options").unwrap(), "nosniff");
+    assert_eq!(h.get("x-frame-options").unwrap(), "DENY");
+    assert_eq!(h.get("cache-control").unwrap(), "no-store");
+}
+
+#[tokio::test]
+async fn usage_endpoint_reports_metered_api_calls() {
+    let state = test_state().await;
+    let token = login(&state).await;
+    let t = Some(token.as_str());
+
+    // Any authenticated call meters; then read the meters back.
+    let (s, _) = call(&state, "GET", "/v1/auth/me", t, None).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, meters) = call(&state, "GET", "/v1/usage", t, None).await;
+    assert_eq!(s, StatusCode::OK, "usage failed: {meters}");
+    let arr = meters.as_array().unwrap();
+    let api_calls = arr
+        .iter()
+        .find(|m| m["metric"] == "api_calls")
+        .expect("api_calls meter present");
+    assert!(api_calls["value"].as_i64().unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn weak_bootstrap_password_is_rejected() {
+    let state = empty_state().await;
+    let (s, b) = call(
+        &state,
+        "POST",
+        "/v1/bootstrap",
+        None,
+        Some(json!({
+            "name": "WeakCo", "slug": "weakco",
+            "admin_email": "admin@weakco.test", "admin_name": "Admin",
+            "admin_password": "short"
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "expected 422: {b}");
+    assert_eq!(b["error"]["code"], "validation");
+}

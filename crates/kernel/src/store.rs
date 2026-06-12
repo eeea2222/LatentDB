@@ -45,6 +45,16 @@ impl StoreConfig {
 /// held privately inside [`crate::Kernel`].
 pub type Store = SqlitePool;
 
+/// Pool size for the file-backed store, tunable for concurrent multi-tenant
+/// serving via `LATENTDB_MAX_CONNECTIONS` (1..=64, default 8).
+fn file_pool_size() -> u32 {
+    std::env::var("LATENTDB_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .map(|n| n.clamp(1, 64))
+        .unwrap_or(8)
+}
+
 pub(crate) async fn connect(config: &StoreConfig) -> latentdb_contracts::Result<SqlitePool> {
     let (opts, max_conns) = match config {
         StoreConfig::Memory => (
@@ -60,8 +70,12 @@ pub(crate) async fn connect(config: &StoreConfig) -> latentdb_contracts::Result<
                 .create_if_missing(true)
                 .foreign_keys(true)
                 .journal_mode(SqliteJournalMode::Wal)
+                // WAL + NORMAL is the recommended pairing: fsync at checkpoint
+                // boundaries instead of every commit, much better write
+                // concurrency with no integrity loss on app crash.
+                .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
                 .busy_timeout(std::time::Duration::from_secs(5)),
-            8,
+            file_pool_size(),
         ),
     };
 

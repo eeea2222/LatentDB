@@ -58,6 +58,11 @@ impl Kernel {
         admin_name: &str,
         admin_password: &str,
     ) -> latentdb_contracts::Result<BootstrapResult> {
+        let slug = slug.trim().to_lowercase();
+        validate_slug(&slug)?;
+        let admin_email = crate::auth::normalize_email(admin_email);
+        crate::identity::validate_email(&admin_email)?;
+        crate::crypto::validate_password_strength(admin_password)?;
         let now = ids::now_rfc3339();
         let tenant_id = ids::new_id();
         let org_id = ids::new_id();
@@ -72,7 +77,7 @@ impl Kernel {
         )
         .bind(&tenant_id)
         .bind(name)
-        .bind(slug)
+        .bind(&slug)
         .bind("standard")
         .bind("active")
         .bind(&now)
@@ -103,7 +108,7 @@ impl Kernel {
 
         // Admin user.
         sqlx::query("INSERT INTO users (id, tenant_id, email, name, password_hash, status, is_platform_admin, default_org_id, created_at) VALUES (?,?,?,?,?,?,?,?,?)")
-            .bind(&admin_id).bind(&tenant_id).bind(admin_email).bind(admin_name)
+            .bind(&admin_id).bind(&tenant_id).bind(&admin_email).bind(admin_name)
             .bind(&pw_hash).bind("active").bind(0i64).bind(&org_id).bind(&now)
             .execute(&mut *tx).await.map_err(map_db_err)?;
 
@@ -128,7 +133,7 @@ impl Kernel {
             tenant: Tenant {
                 id: tenant_id.clone(),
                 name: name.into(),
-                slug: slug.into(),
+                slug,
                 plan: "standard".into(),
                 status: "active".into(),
                 created_at: now.clone(),
@@ -214,6 +219,71 @@ impl Kernel {
             .collect()
     }
 
+    /// Whether any tenant has been provisioned yet. Drives the one-time
+    /// unauthenticated first-run bootstrap.
+    pub async fn tenants_exist(&self) -> latentdb_contracts::Result<bool> {
+        let row = sqlx::query("SELECT 1 FROM tenants LIMIT 1")
+            .fetch_optional(self.pool())
+            .await
+            .map_err(map_db_err)?;
+        Ok(row.is_some())
+    }
+
+    /// Suspend or re-activate a tenant. Platform-admin only. Suspension takes
+    /// effect immediately: every session and API key of the tenant is refused
+    /// at verification time while the status is not `active`.
+    pub async fn set_tenant_status(
+        &self,
+        ctx: &AuthContext,
+        tenant_id: &str,
+        status: &str,
+    ) -> latentdb_contracts::Result<Tenant> {
+        if !ctx.is_platform_admin && !ctx.is_system() {
+            self.audit_denial(ctx, "configure", "platform:tenants", None)
+                .await;
+            return Err(ApiError::forbidden("platform admin required"));
+        }
+        if !matches!(status, "active" | "suspended") {
+            return Err(ApiError::validation(
+                "status must be 'active' or 'suspended'",
+            ));
+        }
+        let row = sqlx::query("SELECT * FROM tenants WHERE id = ?")
+            .bind(tenant_id)
+            .fetch_optional(self.pool())
+            .await
+            .map_err(map_db_err)?
+            .ok_or_else(|| ApiError::not_found("tenant not found"))?;
+        let before: String = row.try_get("status").map_err(map_db_err)?;
+
+        let mut tx = self.pool().begin().await.map_err(map_db_err)?;
+        sqlx::query("UPDATE tenants SET status = ? WHERE id = ?")
+            .bind(status)
+            .bind(tenant_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db_err)?;
+        let ev = event_from(
+            ctx,
+            "tenant.set_status",
+            Some("tenant"),
+            Some(tenant_id),
+            Some(serde_json::json!({"status": before})),
+            Some(serde_json::json!({"status": status})),
+        );
+        insert_audit(&mut tx, &ev).await?;
+        tx.commit().await.map_err(map_db_err)?;
+
+        Ok(Tenant {
+            id: row.try_get("id").map_err(map_db_err)?,
+            name: row.try_get("name").map_err(map_db_err)?,
+            slug: row.try_get("slug").map_err(map_db_err)?,
+            plan: row.try_get("plan").map_err(map_db_err)?,
+            status: status.to_string(),
+            created_at: row.try_get("created_at").map_err(map_db_err)?,
+        })
+    }
+
     /// Create a workspace inside the caller's org.
     pub async fn create_workspace(
         &self,
@@ -253,5 +323,26 @@ impl Kernel {
             name: name.into(),
             created_at: now,
         })
+    }
+}
+
+/// Tenant slugs become URL/login identifiers, so keep them strict: 2–63 chars,
+/// lowercase alphanumerics plus hyphen/underscore, starting and ending
+/// alphanumeric.
+fn validate_slug(slug: &str) -> latentdb_contracts::Result<()> {
+    let bytes = slug.as_bytes();
+    let alnum_edge = |b: &u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    let ok = (2..=63).contains(&bytes.len())
+        && bytes
+            .iter()
+            .all(|b| alnum_edge(b) || *b == b'-' || *b == b'_')
+        && bytes.first().is_some_and(alnum_edge)
+        && bytes.last().is_some_and(alnum_edge);
+    if ok {
+        Ok(())
+    } else {
+        Err(ApiError::validation(
+            "slug must be 2-63 chars of lowercase letters, digits, hyphens, or underscores, starting and ending alphanumeric",
+        ))
     }
 }

@@ -103,15 +103,16 @@ impl Kernel {
             .map_err(map_db_err)?
             .ok_or_else(|| ApiError::not_found("task not found"))?;
         let task = row_to_task(&row)?;
-        // Either you can read tasks broadly, or it is assigned to / created by you.
-        let broad = self
-            .authorize(ctx, Action::Read, "task", None)
-            .await
-            .is_ok();
+        // Either you can read tasks broadly, or it is assigned to / created by
+        // you. The broad check is non-auditing so an assignee viewing their own
+        // task does not spam the audit log with permission denials.
+        let grants = self.effective_grants(ctx).await?;
+        let broad = self.grants_allow(&grants, ctx, Action::Read, "task", None);
         if !broad
             && task.assignee_id.as_deref() != Some(ctx.actor_id.as_str())
             && task.created_by != ctx.actor_id
         {
+            self.audit_denial(ctx, "read", "task", Some(id)).await;
             return Err(ApiError::forbidden("not permitted to view this task"));
         }
         Ok(task)
@@ -161,7 +162,15 @@ impl Kernel {
         id: &str,
         status: &str,
     ) -> latentdb_contracts::Result<Task> {
+        if !matches!(status, "done" | "cancelled") {
+            return Err(ApiError::validation(
+                "status must be 'done' or 'cancelled'",
+            ));
+        }
         let task = self.get_task(ctx, id).await?; // enforces visibility
+        if task.status != "open" && task.status != "in_progress" {
+            return Err(ApiError::failed_precondition("task is already closed"));
+        }
         let now = ids::now_rfc3339();
         let mut tx = self.pool().begin().await.map_err(map_db_err)?;
         sqlx::query("UPDATE tasks SET status = ?, updated_at = ? WHERE tenant_id = ? AND id = ?")
