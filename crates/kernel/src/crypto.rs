@@ -19,9 +19,8 @@ pub const MAX_PASSWORD_LEN: usize = 128;
 /// A valid Argon2 hash of a random throwaway secret. Verified against when a
 /// login names an unknown tenant/user so that the "no such user" and "wrong
 /// password" paths cost the same, preventing timing-based account enumeration.
-static DUMMY_HASH: Lazy<String> = Lazy::new(|| {
-    hash_password("latentdb-timing-equalizer").unwrap_or_else(|_| String::new())
-});
+static DUMMY_HASH: Lazy<String> =
+    Lazy::new(|| hash_password("latentdb-timing-equalizer").unwrap_or_else(|_| String::new()));
 
 /// Enforce the password policy. Called wherever a password is set (bootstrap,
 /// user creation) — never on verification, so existing credentials keep working

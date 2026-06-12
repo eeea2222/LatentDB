@@ -43,7 +43,8 @@ impl Kernel {
         ctx: &AuthContext,
         target_system_key: Option<&str>,
     ) -> latentdb_contracts::Result<MigrationSession> {
-        self.authorize(ctx, Action::Configure, RESOURCE, None).await?;
+        self.authorize(ctx, Action::Configure, RESOURCE, None)
+            .await?;
 
         if let Some(key) = target_system_key {
             ensure_template(key)?;
@@ -116,7 +117,8 @@ impl Kernel {
         ctx: &AuthContext,
         target_system_key: &str,
     ) -> latentdb_contracts::Result<MigrationSession> {
-        self.authorize(ctx, Action::Configure, RESOURCE, None).await?;
+        self.authorize(ctx, Action::Configure, RESOURCE, None)
+            .await?;
         ensure_template(target_system_key)?;
         self.require_session(ctx).await?; // must have started
 
@@ -153,7 +155,8 @@ impl Kernel {
         ctx: &AuthContext,
         active: SystemKind,
     ) -> latentdb_contracts::Result<MigrationSession> {
-        self.authorize(ctx, Action::Configure, RESOURCE, None).await?;
+        self.authorize(ctx, Action::Configure, RESOURCE, None)
+            .await?;
         let session = self.require_session(ctx).await?;
 
         if active == SystemKind::Selected && session.selected_system_key.is_none() {
@@ -496,8 +499,7 @@ fn build_plan(
                 mapped_objects += 1;
                 let record_count = counts.get(&def.key).copied().unwrap_or(0);
                 records_mappable += record_count;
-                let field_mappings =
-                    map_fields(&def.key, source, &def.fields, &mut conflicts);
+                let field_mappings = map_fields(&def.key, source, &def.fields, &mut conflicts);
                 object_mappings.push(ObjectMapping {
                     source_object: Some(def.key.clone()),
                     target_object: Some(def.key.clone()),
@@ -637,8 +639,9 @@ fn build_report(
 
     // A plan exists only when a target is selected and we're reporting for it.
     let plan = match (for_system, selected_key) {
-        (SystemKind::Selected, Some(key)) => builder::template_by_key(key)
-            .map(|t| build_plan(key, old_objects, counts, &t.objects)),
+        (SystemKind::Selected, Some(key)) => {
+            builder::template_by_key(key).map(|t| build_plan(key, old_objects, counts, &t.objects))
+        }
         _ => None,
     };
 
@@ -727,8 +730,11 @@ fn row_to_session(row: &sqlx::sqlite::SqliteRow) -> latentdb_contracts::Result<M
         .try_get::<Option<String>, _>("last_report_json")
         .map_err(map_db_err)?
         .and_then(|s| serde_json::from_str(&s).ok());
-    let active_system = SystemKind::parse(&row.try_get::<String, _>("active_system").map_err(map_db_err)?)
-        .unwrap_or(SystemKind::Old);
+    let active_system = SystemKind::parse(
+        &row.try_get::<String, _>("active_system")
+            .map_err(map_db_err)?,
+    )
+    .unwrap_or(SystemKind::Old);
     Ok(MigrationSession {
         tenant_id: row.try_get("tenant_id").map_err(map_db_err)?,
         status: MigrationStatus::parse(&row.try_get::<String, _>("status").map_err(map_db_err)?),

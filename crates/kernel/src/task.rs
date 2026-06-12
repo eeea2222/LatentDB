@@ -163,9 +163,7 @@ impl Kernel {
         status: &str,
     ) -> latentdb_contracts::Result<Task> {
         if !matches!(status, "done" | "cancelled") {
-            return Err(ApiError::validation(
-                "status must be 'done' or 'cancelled'",
-            ));
+            return Err(ApiError::validation("status must be 'done' or 'cancelled'"));
         }
         let task = self.get_task(ctx, id).await?; // enforces visibility
         if task.status != "open" && task.status != "in_progress" {

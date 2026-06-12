@@ -80,7 +80,14 @@ impl Kernel {
         let Some(tenant) = tenant else {
             crate::crypto::equalize_verify_timing(password);
             return Err(self
-                .login_failure(&limiter_key, tenant_slug, &email, "unknown_tenant", request_id, source)
+                .login_failure(
+                    &limiter_key,
+                    tenant_slug,
+                    &email,
+                    "unknown_tenant",
+                    request_id,
+                    source,
+                )
                 .await);
         };
         let tenant_id: String = tenant.try_get("id").map_err(map_db_err)?;
@@ -94,7 +101,14 @@ impl Kernel {
         let Some(user) = user else {
             crate::crypto::equalize_verify_timing(password);
             return Err(self
-                .login_failure(&limiter_key, tenant_slug, &email, "unknown_user", request_id, source)
+                .login_failure(
+                    &limiter_key,
+                    tenant_slug,
+                    &email,
+                    "unknown_user",
+                    request_id,
+                    source,
+                )
                 .await);
         };
 
@@ -102,13 +116,27 @@ impl Kernel {
         if status != "active" {
             crate::crypto::equalize_verify_timing(password);
             return Err(self
-                .login_failure(&limiter_key, tenant_slug, &email, "user_inactive", request_id, source)
+                .login_failure(
+                    &limiter_key,
+                    tenant_slug,
+                    &email,
+                    "user_inactive",
+                    request_id,
+                    source,
+                )
                 .await);
         }
         let pw_hash: String = user.try_get("password_hash").map_err(map_db_err)?;
         if !crate::crypto::verify_password(password, &pw_hash)? {
             return Err(self
-                .login_failure(&limiter_key, tenant_slug, &email, "bad_password", request_id, source)
+                .login_failure(
+                    &limiter_key,
+                    tenant_slug,
+                    &email,
+                    "bad_password",
+                    request_id,
+                    source,
+                )
                 .await);
         }
         self.login_limiter().reset(&limiter_key);

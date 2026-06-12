@@ -615,8 +615,7 @@ fn compare_field(a: &Record, b: &Record, field: &str) -> std::cmp::Ordering {
 pub(crate) fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> latentdb_contracts::Result<Record> {
     let data_json: String = row.try_get("data_json").map_err(map_db_err)?;
     let data: Map<String, Value> = serde_json::from_str(&data_json).unwrap_or_default();
-    let lifecycle =
-        Lifecycle::parse(&row.try_get::<String, _>("lifecycle").map_err(map_db_err)?);
+    let lifecycle = Lifecycle::parse(&row.try_get::<String, _>("lifecycle").map_err(map_db_err)?);
     Ok(Record {
         id: row.try_get("id").map_err(map_db_err)?,
         object_type: row.try_get("object_type").map_err(map_db_err)?,

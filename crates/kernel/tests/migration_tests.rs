@@ -28,7 +28,13 @@ async fn bootstrap_admin(k: &Kernel, slug: &str) -> (AuthContext, String) {
     .await
     .expect("bootstrap");
     let login = k
-        .login(slug, "admin@example.test", "pw-admin-123", "req-1", Source::Api)
+        .login(
+            slug,
+            "admin@example.test",
+            "pw-admin-123",
+            "req-1",
+            Source::Api,
+        )
         .await
         .expect("login");
     let ctx = k
@@ -202,7 +208,7 @@ async fn plan_maps_old_onto_selected_with_conflicts() {
     assert_eq!(plan.summary.source_records, 6);
     assert_eq!(plan.summary.records_mappable, 5); // 2 accounts + 3 invoices
     assert_eq!(plan.summary.records_unmapped, 1); // the widget
-    // tier type mismatch + dropped legacy_code + unmapped widget.
+                                                  // tier type mismatch + dropped legacy_code + unmapped widget.
     assert_eq!(plan.summary.conflicts, 3);
 
     // The three distinct conflict kinds are all present.
@@ -277,7 +283,9 @@ async fn logout_emits_report_for_active_system() {
     let (ctx, token) = bootstrap_admin(&k, "co-logout").await;
     seed_old_system(&k, &ctx).await;
     k.start_migration(&ctx, Some("finance")).await.unwrap();
-    k.set_active_system(&ctx, SystemKind::Selected).await.unwrap();
+    k.set_active_system(&ctx, SystemKind::Selected)
+        .await
+        .unwrap();
 
     let report = k
         .logout(&token)

@@ -39,21 +39,39 @@ async fn login_is_rate_limited_after_repeated_failures() {
 
     for _ in 0..10 {
         let err = k
-            .login("ratelimit", "admin@example.test", "wrong-pass", "r", Source::Api)
+            .login(
+                "ratelimit",
+                "admin@example.test",
+                "wrong-pass",
+                "r",
+                Source::Api,
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::Unauthorized);
     }
     // The 11th attempt is locked out — even with the correct password.
     let err = k
-        .login("ratelimit", "admin@example.test", "pw-admin-123", "r", Source::Api)
+        .login(
+            "ratelimit",
+            "admin@example.test",
+            "pw-admin-123",
+            "r",
+            Source::Api,
+        )
         .await
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::RateLimited);
 
     // Another user in the same tenant is unaffected (per-identity limiter).
     let err = k
-        .login("ratelimit", "other@example.test", "wrong-pass", "r", Source::Api)
+        .login(
+            "ratelimit",
+            "other@example.test",
+            "wrong-pass",
+            "r",
+            Source::Api,
+        )
         .await
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::Unauthorized);
@@ -64,7 +82,13 @@ async fn failed_logins_are_audited() {
     let k = Kernel::in_memory().await.unwrap();
     let admin = bootstrap_admin(&k, "auditfail").await;
     let _ = k
-        .login("auditfail", "admin@example.test", "nope-nope", "r", Source::Api)
+        .login(
+            "auditfail",
+            "admin@example.test",
+            "nope-nope",
+            "r",
+            Source::Api,
+        )
         .await
         .unwrap_err();
 
@@ -96,7 +120,13 @@ async fn login_email_is_case_insensitive() {
     let k = Kernel::in_memory().await.unwrap();
     bootstrap_admin(&k, "caseco").await;
     let res = k
-        .login("caseco", "  ADMIN@Example.Test ", "pw-admin-123", "r", Source::Api)
+        .login(
+            "caseco",
+            "  ADMIN@Example.Test ",
+            "pw-admin-123",
+            "r",
+            Source::Api,
+        )
         .await
         .unwrap();
     assert_eq!(res.email, "admin@example.test");
@@ -122,15 +152,25 @@ async fn disabling_a_user_revokes_sessions_and_api_keys() {
         .await
         .unwrap();
     let session = k
-        .login("lifecycle", "worker@example.test", "pw-worker-123", "r", Source::Api)
+        .login(
+            "lifecycle",
+            "worker@example.test",
+            "pw-worker-123",
+            "r",
+            Source::Api,
+        )
         .await
         .unwrap();
 
     // Both credentials work while the user is active.
-    k.authenticate(&session.token, "r", Source::Api).await.unwrap();
+    k.authenticate(&session.token, "r", Source::Api)
+        .await
+        .unwrap();
     k.authenticate(&key.token, "r", Source::Api).await.unwrap();
 
-    k.set_user_status(&admin, &user.id, "disabled").await.unwrap();
+    k.set_user_status(&admin, &user.id, "disabled")
+        .await
+        .unwrap();
 
     let err = k
         .authenticate(&session.token, "r", Source::Api)
@@ -145,7 +185,13 @@ async fn disabling_a_user_revokes_sessions_and_api_keys() {
 
     // And the disabled user can no longer log in.
     let err = k
-        .login("lifecycle", "worker@example.test", "pw-worker-123", "r", Source::Api)
+        .login(
+            "lifecycle",
+            "worker@example.test",
+            "pw-worker-123",
+            "r",
+            Source::Api,
+        )
         .await
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::Unauthorized);
@@ -167,7 +213,13 @@ async fn suspending_a_tenant_blocks_existing_credentials() {
     let k = Kernel::in_memory().await.unwrap();
     let admin = bootstrap_admin(&k, "suspendco").await;
     let session = k
-        .login("suspendco", "admin@example.test", "pw-admin-123", "r", Source::Api)
+        .login(
+            "suspendco",
+            "admin@example.test",
+            "pw-admin-123",
+            "r",
+            Source::Api,
+        )
         .await
         .unwrap();
 
@@ -182,7 +234,13 @@ async fn suspending_a_tenant_blocks_existing_credentials() {
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::Unauthorized);
     let err = k
-        .login("suspendco", "admin@example.test", "pw-admin-123", "r", Source::Api)
+        .login(
+            "suspendco",
+            "admin@example.test",
+            "pw-admin-123",
+            "r",
+            Source::Api,
+        )
         .await
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::Unauthorized);
@@ -191,7 +249,9 @@ async fn suspending_a_tenant_blocks_existing_credentials() {
     k.set_tenant_status(&platform, &admin.tenant_id, "active")
         .await
         .unwrap();
-    k.authenticate(&session.token, "r", Source::Api).await.unwrap();
+    k.authenticate(&session.token, "r", Source::Api)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -210,11 +270,23 @@ async fn api_keys_cannot_be_minted_for_foreign_principals() {
     let k = Kernel::in_memory().await.unwrap();
     let admin_a = bootstrap_admin(&k, "keytenant-a").await;
     let admin_b = {
-        k.bootstrap_tenant("TestCo B", "keytenant-b", "b@example.test", "B", "pw-admin-123")
-            .await
-            .unwrap();
+        k.bootstrap_tenant(
+            "TestCo B",
+            "keytenant-b",
+            "b@example.test",
+            "B",
+            "pw-admin-123",
+        )
+        .await
+        .unwrap();
         let l = k
-            .login("keytenant-b", "b@example.test", "pw-admin-123", "r", Source::Api)
+            .login(
+                "keytenant-b",
+                "b@example.test",
+                "pw-admin-123",
+                "r",
+                Source::Api,
+            )
             .await
             .unwrap();
         k.authenticate(&l.token, "r", Source::Api).await.unwrap()
@@ -274,8 +346,16 @@ async fn requester_cannot_decide_own_approval_when_sod_enabled() {
         name: "Invoice Approval".into(),
         initial_state: "draft".into(),
         states: vec![
-            WorkflowState { key: "draft".into(), label: "Draft".into(), terminal: false },
-            WorkflowState { key: "approved".into(), label: "Approved".into(), terminal: true },
+            WorkflowState {
+                key: "draft".into(),
+                label: "Draft".into(),
+                terminal: false,
+            },
+            WorkflowState {
+                key: "approved".into(),
+                label: "Approved".into(),
+                terminal: true,
+            },
         ],
         transitions: vec![Transition {
             key: "approve".into(),
@@ -341,10 +421,19 @@ async fn requester_cannot_decide_own_approval_when_sod_enabled() {
     .await
     .unwrap();
     let login = k
-        .login("sodco", "approver@example.test", "pw-approver-1", "r", Source::Api)
+        .login(
+            "sodco",
+            "approver@example.test",
+            "pw-approver-1",
+            "r",
+            Source::Api,
+        )
         .await
         .unwrap();
-    let other_ctx = k.authenticate(&login.token, "r", Source::Api).await.unwrap();
+    let other_ctx = k
+        .authenticate(&login.token, "r", Source::Api)
+        .await
+        .unwrap();
     let decided = k
         .decide_approval(&other_ctx, &approval_id, true, Some("ok"))
         .await
@@ -357,7 +446,13 @@ async fn session_cleanup_removes_revoked_sessions() {
     let k = Kernel::in_memory().await.unwrap();
     bootstrap_admin(&k, "cleanco").await;
     let session = k
-        .login("cleanco", "admin@example.test", "pw-admin-123", "r", Source::Api)
+        .login(
+            "cleanco",
+            "admin@example.test",
+            "pw-admin-123",
+            "r",
+            Source::Api,
+        )
         .await
         .unwrap();
     k.logout(&session.token).await.unwrap();

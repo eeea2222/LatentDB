@@ -179,9 +179,7 @@ async fn security_headers_mw(
         .headers()
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
-        .filter(|v| {
-            (1..=64).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_graphic())
-        })
+        .filter(|v| (1..=64).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_graphic()))
         .map(|s| s.to_string())
         .unwrap_or_else(latentdb_contracts::ids::new_id);
     if let Ok(value) = HeaderValue::from_str(&request_id) {
@@ -189,7 +187,10 @@ async fn security_headers_mw(
         let mut resp = next.run(req).await;
         let headers = resp.headers_mut();
         headers.insert("x-request-id", value);
-        headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+        headers.insert(
+            "x-content-type-options",
+            HeaderValue::from_static("nosniff"),
+        );
         headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
         headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
         headers.insert("cache-control", HeaderValue::from_static("no-store"));
@@ -259,7 +260,10 @@ struct LogoutResult {
     migration_report: Option<MigrationReport>,
 }
 
-async fn logout(State(s): State<AppState>, headers: axum::http::HeaderMap) -> ApiJson<LogoutResult> {
+async fn logout(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> ApiJson<LogoutResult> {
     let mut migration_report = None;
     if let Some(tok) = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -362,7 +366,9 @@ async fn set_tenant_status(
     Path(id): Path<String>,
     Json(req): Json<StatusReq>,
 ) -> ApiJson<Tenant> {
-    Ok(Json(s.kernel.set_tenant_status(&ctx, &id, &req.status).await?))
+    Ok(Json(
+        s.kernel.set_tenant_status(&ctx, &id, &req.status).await?,
+    ))
 }
 
 /// Enable or disable a user. Disabling revokes their sessions.
@@ -372,7 +378,9 @@ async fn set_user_status(
     Path(id): Path<String>,
     Json(req): Json<StatusReq>,
 ) -> ApiJson<User> {
-    Ok(Json(s.kernel.set_user_status(&ctx, &id, &req.status).await?))
+    Ok(Json(
+        s.kernel.set_user_status(&ctx, &id, &req.status).await?,
+    ))
 }
 
 /// Per-tenant usage meters (api calls etc.), most recent period first.
@@ -1122,7 +1130,14 @@ async fn ai_capabilities(Auth(_ctx): Auth) -> Json<AiCapabilities> {
                 action: "Supply risk",
                 endpoint: "/v1/ai/agents/procurement/low-stock",
                 modules: &["procurement", "inventory", "scm"],
-                object_hints: &["purchase", "vendor", "product", "inventory", "warehouse", "receipt"],
+                object_hints: &[
+                    "purchase",
+                    "vendor",
+                    "product",
+                    "inventory",
+                    "warehouse",
+                    "receipt",
+                ],
             },
             AiAgentCapability {
                 key: "sales",
