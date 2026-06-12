@@ -46,7 +46,9 @@ impl Kernel {
     ) -> latentdb_contracts::Result<Record> {
         let resource = resource_for(&new.object_type);
         self.authorize(ctx, Action::Create, &resource, None).await?;
-        let otype = self.load_object_type(&ctx.tenant_id, &new.object_type).await?;
+        let otype = self
+            .load_object_type(&ctx.tenant_id, &new.object_type)
+            .await?;
 
         // Build the data map: defaults first, then provided values.
         let mut data = Map::new();
@@ -55,18 +57,24 @@ impl Kernel {
                 data.insert(f.key.clone(), def.clone());
             }
         }
-        let create_grants = self.grants_for(ctx, Action::Create, &resource, None).await?;
+        let create_grants = self
+            .grants_for(ctx, Action::Create, &resource, None)
+            .await?;
         let grant_refs: Vec<&PermissionGrant> = create_grants.iter().collect();
         for (key, value) in &new.data {
             let field = otype
                 .field(key)
                 .ok_or_else(|| ApiError::validation(format!("unknown field '{key}'")))?;
             if field.system {
-                return Err(ApiError::validation(format!("field '{key}' is system-managed")));
+                return Err(ApiError::validation(format!(
+                    "field '{key}' is system-managed"
+                )));
             }
             if field.restricted && !crate::rbac::field_permitted(&grant_refs, &otype, key) {
                 self.audit_denial(ctx, "write_field", &resource, None).await;
-                return Err(ApiError::forbidden(format!("not permitted to set field '{key}'")));
+                return Err(ApiError::forbidden(format!(
+                    "not permitted to set field '{key}'"
+                )));
             }
             data.insert(key.clone(), value.clone());
         }
@@ -81,8 +89,10 @@ impl Kernel {
         let id = ids::new_id();
         let now = ids::now_rfc3339();
         let data_json = Value::Object(data.clone()).to_string();
-        let workspace_id: Option<String> =
-            new.workspace_id.clone().or_else(|| ctx.workspace_id.clone());
+        let workspace_id: Option<String> = new
+            .workspace_id
+            .clone()
+            .or_else(|| ctx.workspace_id.clone());
 
         let mut tx = self.pool().begin().await.map_err(map_db_err)?;
         sqlx::query("INSERT INTO records (id, tenant_id, org_id, workspace_id, object_type, data_json, lifecycle, workflow_state, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
@@ -92,11 +102,22 @@ impl Kernel {
             .bind(workflow_state.as_deref()).bind(&ctx.actor_id).bind(&now).bind(&now)
             .execute(&mut *tx).await.map_err(map_db_err)?;
 
-        let ev = event_from(ctx, "record.create", Some(&new.object_type), Some(&id),
-            None, Some(Value::Object(data.clone())));
+        let ev = event_from(
+            ctx,
+            "record.create",
+            Some(&new.object_type),
+            Some(&id),
+            None,
+            Some(Value::Object(data.clone())),
+        );
         insert_audit(&mut tx, &ev).await?;
-        emit_on(&mut tx, ctx, "record.created",
-            serde_json::json!({"object_type": new.object_type, "id": id})).await?;
+        emit_on(
+            &mut tx,
+            ctx,
+            "record.created",
+            serde_json::json!({"object_type": new.object_type, "id": id}),
+        )
+        .await?;
         tx.commit().await.map_err(map_db_err)?;
 
         Ok(Record {
@@ -104,7 +125,10 @@ impl Kernel {
             object_type: new.object_type.clone(),
             tenant_id: ctx.tenant_id.clone(),
             org_id: ctx.org_id.clone(),
-            workspace_id: new.workspace_id.clone().or_else(|| ctx.workspace_id.clone()),
+            workspace_id: new
+                .workspace_id
+                .clone()
+                .or_else(|| ctx.workspace_id.clone()),
             data,
             lifecycle: Lifecycle::Active,
             workflow_state,
@@ -127,8 +151,11 @@ impl Kernel {
             .await?
             .ok_or_else(|| ApiError::not_found("record not found"))?;
         let resource = resource_for(&record.object_type);
-        self.authorize(ctx, Action::Read, &resource, Some(&record)).await?;
-        let otype = self.load_object_type(&ctx.tenant_id, &record.object_type).await?;
+        self.authorize(ctx, Action::Read, &resource, Some(&record))
+            .await?;
+        let otype = self
+            .load_object_type(&ctx.tenant_id, &record.object_type)
+            .await?;
         Ok(self.project_for_read(ctx, &record, &otype).await?)
     }
 
@@ -145,8 +172,11 @@ impl Kernel {
             .await?
             .ok_or_else(|| ApiError::not_found("record not found"))?;
         let resource = resource_for(&record.object_type);
-        self.authorize(ctx, Action::Update, &resource, Some(&record)).await?;
-        let otype = self.load_object_type(&ctx.tenant_id, &record.object_type).await?;
+        self.authorize(ctx, Action::Update, &resource, Some(&record))
+            .await?;
+        let otype = self
+            .load_object_type(&ctx.tenant_id, &record.object_type)
+            .await?;
 
         let before = Value::Object(record.data.clone());
         let update_grants = self
@@ -159,11 +189,16 @@ impl Kernel {
                 .field(key)
                 .ok_or_else(|| ApiError::validation(format!("unknown field '{key}'")))?;
             if field.system {
-                return Err(ApiError::validation(format!("field '{key}' is system-managed")));
+                return Err(ApiError::validation(format!(
+                    "field '{key}' is system-managed"
+                )));
             }
             if field.restricted && !crate::rbac::field_permitted(&grant_refs, &otype, key) {
-                self.audit_denial(ctx, "write_field", &resource, Some(id)).await;
-                return Err(ApiError::forbidden(format!("not permitted to set field '{key}'")));
+                self.audit_denial(ctx, "write_field", &resource, Some(id))
+                    .await;
+                return Err(ApiError::forbidden(format!(
+                    "not permitted to set field '{key}'"
+                )));
             }
             if value.is_null() {
                 record.data.remove(key);
@@ -176,14 +211,32 @@ impl Kernel {
         let now = ids::now_rfc3339();
         let data_json = Value::Object(record.data.clone()).to_string();
         let mut tx = self.pool().begin().await.map_err(map_db_err)?;
-        sqlx::query("UPDATE records SET data_json = ?, updated_at = ? WHERE tenant_id = ? AND id = ?")
-            .bind(&data_json).bind(&now).bind(&ctx.tenant_id).bind(id)
-            .execute(&mut *tx).await.map_err(map_db_err)?;
-        let ev = event_from(ctx, "record.update", Some(&record.object_type), Some(id),
-            Some(before), Some(Value::Object(record.data.clone())));
+        sqlx::query(
+            "UPDATE records SET data_json = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+        )
+        .bind(&data_json)
+        .bind(&now)
+        .bind(&ctx.tenant_id)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db_err)?;
+        let ev = event_from(
+            ctx,
+            "record.update",
+            Some(&record.object_type),
+            Some(id),
+            Some(before),
+            Some(Value::Object(record.data.clone())),
+        );
         insert_audit(&mut tx, &ev).await?;
-        emit_on(&mut tx, ctx, "record.updated",
-            serde_json::json!({"object_type": record.object_type, "id": id})).await?;
+        emit_on(
+            &mut tx,
+            ctx,
+            "record.updated",
+            serde_json::json!({"object_type": record.object_type, "id": id}),
+        )
+        .await?;
         tx.commit().await.map_err(map_db_err)?;
 
         record.updated_at = now;
@@ -223,7 +276,8 @@ impl Kernel {
             Lifecycle::Archived => Action::Archive,
             Lifecycle::Active => Action::Restore,
         };
-        self.authorize(ctx, action, &resource, Some(&record)).await?;
+        self.authorize(ctx, action, &resource, Some(&record))
+            .await?;
         let now = ids::now_rfc3339();
         let archived_at = match lifecycle {
             Lifecycle::Archived => Some(now.clone()),
@@ -233,7 +287,11 @@ impl Kernel {
         sqlx::query("UPDATE records SET lifecycle = ?, archived_at = ?, updated_at = ? WHERE tenant_id = ? AND id = ?")
             .bind(lifecycle.as_str()).bind(&archived_at).bind(&now).bind(&ctx.tenant_id).bind(id)
             .execute(&mut *tx).await.map_err(map_db_err)?;
-        let verb = if matches!(lifecycle, Lifecycle::Archived) { "record.archive" } else { "record.restore" };
+        let verb = if matches!(lifecycle, Lifecycle::Archived) {
+            "record.archive"
+        } else {
+            "record.restore"
+        };
         let ev = event_from(ctx, verb, Some(&record.object_type), Some(id), None, None);
         insert_audit(&mut tx, &ev).await?;
         tx.commit().await.map_err(map_db_err)?;
@@ -255,9 +313,7 @@ impl Kernel {
         let grants = self.effective_grants(ctx).await?;
 
         // Fetch the candidate set (tenant + type + lifecycle), bounded.
-        let mut sql = String::from(
-            "SELECT * FROM records WHERE tenant_id = ? AND object_type = ?",
-        );
+        let mut sql = String::from("SELECT * FROM records WHERE tenant_id = ? AND object_type = ?");
         if !filter.include_archived {
             sql.push_str(" AND lifecycle = 'active'");
         }
@@ -309,8 +365,7 @@ impl Kernel {
                 if full_access {
                     r.clone()
                 } else {
-                    let read_grants =
-                        self.applicable_read_grants(&grants, ctx, &resource, Some(r));
+                    let read_grants = self.applicable_read_grants(&grants, ctx, &resource, Some(r));
                     r.project_fields(|k| crate::rbac::field_permitted(&read_grants, &otype, k))
                 }
             })
@@ -340,8 +395,15 @@ impl Kernel {
             .load_record(&ctx.tenant_id, to_id)
             .await?
             .ok_or_else(|| ApiError::not_found("to record not found"))?;
-        self.authorize(ctx, Action::Relate, &resource_for(&from.object_type), Some(&from)).await?;
-        self.authorize(ctx, Action::Read, &resource_for(&to.object_type), Some(&to)).await?;
+        self.authorize(
+            ctx,
+            Action::Relate,
+            &resource_for(&from.object_type),
+            Some(&from),
+        )
+        .await?;
+        self.authorize(ctx, Action::Read, &resource_for(&to.object_type), Some(&to))
+            .await?;
 
         let id = ids::new_id();
         let now = ids::now_rfc3339();
@@ -350,8 +412,14 @@ impl Kernel {
             .bind(&id).bind(&ctx.tenant_id).bind(from_id).bind(to_id)
             .bind(relation_type).bind(&ctx.actor_id).bind(&now)
             .execute(&mut *tx).await.map_err(map_db_err)?;
-        let ev = event_from(ctx, "relation.create", Some(&from.object_type), Some(from_id), None,
-            Some(serde_json::json!({"to": to_id, "type": relation_type})));
+        let ev = event_from(
+            ctx,
+            "relation.create",
+            Some(&from.object_type),
+            Some(from_id),
+            None,
+            Some(serde_json::json!({"to": to_id, "type": relation_type})),
+        );
         insert_audit(&mut tx, &ev).await?;
         tx.commit().await.map_err(map_db_err)?;
 
@@ -375,7 +443,13 @@ impl Kernel {
             .load_record(&ctx.tenant_id, record_id)
             .await?
             .ok_or_else(|| ApiError::not_found("record not found"))?;
-        self.authorize(ctx, Action::Read, &resource_for(&record.object_type), Some(&record)).await?;
+        self.authorize(
+            ctx,
+            Action::Read,
+            &resource_for(&record.object_type),
+            Some(&record),
+        )
+        .await?;
 
         let rows = sqlx::query(
             "SELECT * FROM relations WHERE tenant_id = ? AND (from_record = ? OR to_record = ?)",
@@ -454,7 +528,8 @@ impl Kernel {
                 if full {
                     r
                 } else {
-                    let read_grants = self.applicable_read_grants(&grants, ctx, &resource, Some(&r));
+                    let read_grants =
+                        self.applicable_read_grants(&grants, ctx, &resource, Some(&r));
                     r.project_fields(|k| crate::rbac::field_permitted(&read_grants, &otype, k))
                 }
             })
@@ -490,8 +565,12 @@ impl Kernel {
             return Ok(record.clone());
         }
         let grants = self.effective_grants(ctx).await?;
-        let read_grants =
-            self.applicable_read_grants(&grants, ctx, &resource_for(&record.object_type), Some(record));
+        let read_grants = self.applicable_read_grants(
+            &grants,
+            ctx,
+            &resource_for(&record.object_type),
+            Some(record),
+        );
         Ok(record.project_fields(|k| crate::rbac::field_permitted(&read_grants, otype, k)))
     }
 }
@@ -504,8 +583,7 @@ fn validate_against_type(
 ) -> latentdb_contracts::Result<()> {
     for f in &otype.fields {
         let value = data.get(&f.key).cloned().unwrap_or(Value::Null);
-        f.validate_value(&value)
-            .map_err(ApiError::validation)?;
+        f.validate_value(&value).map_err(ApiError::validation)?;
     }
     Ok(())
 }
@@ -537,7 +615,8 @@ fn compare_field(a: &Record, b: &Record, field: &str) -> std::cmp::Ordering {
 pub(crate) fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> latentdb_contracts::Result<Record> {
     let data_json: String = row.try_get("data_json").map_err(map_db_err)?;
     let data: Map<String, Value> = serde_json::from_str(&data_json).unwrap_or_default();
-    let lifecycle = Lifecycle::from_str(&row.try_get::<String, _>("lifecycle").map_err(map_db_err)?);
+    let lifecycle =
+        Lifecycle::from_str(&row.try_get::<String, _>("lifecycle").map_err(map_db_err)?);
     Ok(Record {
         id: row.try_get("id").map_err(map_db_err)?,
         object_type: row.try_get("object_type").map_err(map_db_err)?,

@@ -8,7 +8,7 @@
 use crate::audit::{event_from, insert_audit};
 use crate::store::map_db_err;
 use crate::Kernel;
-use latentdb_contracts::{ids, ActorType, ApiError, AuthContext, Source};
+use latentdb_contracts::{ids, ActorType, ApiError, AuthContext, MigrationReport, Source};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use time::Duration;
@@ -70,8 +70,10 @@ impl Kernel {
 
         let user_id: String = user.try_get("id").map_err(map_db_err)?;
         let name: String = user.try_get("name").map_err(map_db_err)?;
-        let is_platform_admin =
-            user.try_get::<i64, _>("is_platform_admin").map_err(map_db_err)? != 0;
+        let is_platform_admin = user
+            .try_get::<i64, _>("is_platform_admin")
+            .map_err(map_db_err)?
+            != 0;
         let org_id: String = user
             .try_get::<Option<String>, _>("default_org_id")
             .map_err(map_db_err)?
@@ -102,7 +104,14 @@ impl Kernel {
             source,
             agent_safety_level: None,
         };
-        let ev = event_from(&login_ctx, "auth.login", Some("user"), Some(&user_id), None, None);
+        let ev = event_from(
+            &login_ctx,
+            "auth.login",
+            Some("user"),
+            Some(&user_id),
+            None,
+            None,
+        );
         insert_audit(&mut tx, &ev).await?;
         tx.commit().await.map_err(map_db_err)?;
 
@@ -169,8 +178,10 @@ impl Kernel {
         if status != "active" {
             return Err(ApiError::unauthorized("user inactive"));
         }
-        let is_platform_admin =
-            user.try_get::<i64, _>("is_platform_admin").map_err(map_db_err)? != 0;
+        let is_platform_admin = user
+            .try_get::<i64, _>("is_platform_admin")
+            .map_err(map_db_err)?
+            != 0;
         let role_keys = self.roles_for_principal(&tenant_id, &user_id).await?;
 
         Ok(AuthContext {
@@ -234,14 +245,40 @@ impl Kernel {
         })
     }
 
-    /// Revoke a session by its token.
-    pub async fn logout(&self, token: &str) -> latentdb_contracts::Result<()> {
+    /// Revoke a session by its token. For a first-time user who is still in
+    /// onboarding, this also emits the non-destructive migration report for the
+    /// system they were booted into ("output appropriate to either the old or the
+    /// selected system") and returns it. Report generation never blocks logout:
+    /// any failure (or absence of a session) simply yields `None`.
+    pub async fn logout(&self, token: &str) -> latentdb_contracts::Result<Option<MigrationReport>> {
         let hash = crate::crypto::sha256_hex(token);
+
+        // Resolve the live session *before* revoking so we still have the tenant
+        // scope needed to build the report.
+        let report = match sqlx::query(
+            "SELECT tenant_id, org_id FROM sessions WHERE token_hash = ? AND revoked = 0",
+        )
+        .bind(&hash)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(map_db_err)?
+        {
+            Some(row) => {
+                let tenant_id: String = row.try_get("tenant_id").map_err(map_db_err)?;
+                let org_id: String = row.try_get("org_id").map_err(map_db_err)?;
+                // A tenant-scoped system context: trusted for reading the tenant's
+                // own data to assemble an internal onboarding report.
+                let ctx = AuthContext::system(&tenant_id, &org_id);
+                self.logout_migration_output(&ctx).await.unwrap_or(None)
+            }
+            None => None,
+        };
+
         sqlx::query("UPDATE sessions SET revoked = 1 WHERE token_hash = ?")
             .bind(&hash)
             .execute(self.pool())
             .await
             .map_err(map_db_err)?;
-        Ok(())
+        Ok(report)
     }
 }

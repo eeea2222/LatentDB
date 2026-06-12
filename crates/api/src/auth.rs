@@ -31,20 +31,31 @@ impl FromRequestParts<AppState> for Auth {
             .map(|s| s.to_string())
             .unwrap_or_else(ids::new_id);
         let source = detect_source(parts);
-        let ctx = state.kernel.authenticate(&token, &request_id, source).await?;
+        let ctx = state
+            .kernel
+            .authenticate(&token, &request_id, source)
+            .await?;
         Ok(Auth(ctx))
     }
 }
 
 fn bearer(parts: &Parts) -> Option<String> {
-    let raw = parts.headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    let raw = parts
+        .headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
     raw.strip_prefix("Bearer ").map(|s| s.trim().to_string())
 }
 
 /// The admin UI sends `x-latentdb-source: admin_ui` so audit events record where
 /// the action came from. Everything else is treated as a generic API call.
 fn detect_source(parts: &Parts) -> Source {
-    match parts.headers.get("x-latentdb-source").and_then(|v| v.to_str().ok()) {
+    match parts
+        .headers
+        .get("x-latentdb-source")
+        .and_then(|v| v.to_str().ok())
+    {
         Some("admin_ui") => Source::AdminUi,
         Some("agent") => Source::Agent,
         _ => Source::Api,

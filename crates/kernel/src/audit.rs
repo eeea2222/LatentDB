@@ -55,7 +55,14 @@ pub fn event_from_public(
     before: Option<Value>,
     after: Option<Value>,
 ) -> AuditEvent {
-    event_from(ctx, action, target_object_type, target_record_id, before, after)
+    event_from(
+        ctx,
+        action,
+        target_object_type,
+        target_record_id,
+        before,
+        after,
+    )
 }
 
 fn actor_type_str(a: ActorType) -> &'static str {
@@ -142,7 +149,14 @@ impl Kernel {
         resource: &str,
         target_record_id: Option<&str>,
     ) {
-        let mut ev = event_from(ctx, "permission.denied", Some(resource), target_record_id, None, None);
+        let mut ev = event_from(
+            ctx,
+            "permission.denied",
+            Some(resource),
+            target_record_id,
+            None,
+            None,
+        );
         ev.reason = Some(format!("denied {action} on {resource}"));
         // Best-effort: a failure to write the denial must not mask the denial.
         let _ = self.audit(&ev).await;
@@ -208,16 +222,23 @@ impl Kernel {
 }
 
 fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> latentdb_contracts::Result<AuditEvent> {
-    let parse_json = |s: Option<String>| -> Option<Value> {
-        s.and_then(|s| serde_json::from_str(&s).ok())
-    };
-    let actor_type = match row.try_get::<String, _>("actor_type").map_err(map_db_err)?.as_str() {
+    let parse_json =
+        |s: Option<String>| -> Option<Value> { s.and_then(|s| serde_json::from_str(&s).ok()) };
+    let actor_type = match row
+        .try_get::<String, _>("actor_type")
+        .map_err(map_db_err)?
+        .as_str()
+    {
         "user" => ActorType::User,
         "service_account" => ActorType::ServiceAccount,
         "agent" => ActorType::Agent,
         _ => ActorType::System,
     };
-    let source = match row.try_get::<String, _>("source").map_err(map_db_err)?.as_str() {
+    let source = match row
+        .try_get::<String, _>("source")
+        .map_err(map_db_err)?
+        .as_str()
+    {
         "admin_ui" => Source::AdminUi,
         "agent" => Source::Agent,
         "seed" => Source::Seed,

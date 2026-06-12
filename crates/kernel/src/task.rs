@@ -69,9 +69,26 @@ impl Kernel {
         self.authorize(ctx, Action::Create, "task", None).await?;
         let id = ids::new_id();
         let mut tx = self.pool().begin().await.map_err(map_db_err)?;
-        insert_task(&mut tx, ctx, &id, kind, title, assignee_id, related_object_type, related_record_id, &data).await?;
-        let ev = event_from(ctx, "task.create", Some("task"), Some(&id), None,
-            Some(serde_json::json!({"kind": kind, "title": title})));
+        insert_task(
+            &mut tx,
+            ctx,
+            &id,
+            kind,
+            title,
+            assignee_id,
+            related_object_type,
+            related_record_id,
+            &data,
+        )
+        .await?;
+        let ev = event_from(
+            ctx,
+            "task.create",
+            Some("task"),
+            Some(&id),
+            None,
+            Some(serde_json::json!({"kind": kind, "title": title})),
+        );
         insert_audit(&mut tx, &ev).await?;
         tx.commit().await.map_err(map_db_err)?;
         self.get_task(ctx, &id).await
@@ -87,8 +104,12 @@ impl Kernel {
             .ok_or_else(|| ApiError::not_found("task not found"))?;
         let task = row_to_task(&row)?;
         // Either you can read tasks broadly, or it is assigned to / created by you.
-        let broad = self.authorize(ctx, Action::Read, "task", None).await.is_ok();
-        if !broad && task.assignee_id.as_deref() != Some(ctx.actor_id.as_str())
+        let broad = self
+            .authorize(ctx, Action::Read, "task", None)
+            .await
+            .is_ok();
+        if !broad
+            && task.assignee_id.as_deref() != Some(ctx.actor_id.as_str())
             && task.created_by != ctx.actor_id
         {
             return Err(ApiError::forbidden("not permitted to view this task"));
@@ -105,7 +126,8 @@ impl Kernel {
         status: Option<&str>,
     ) -> latentdb_contracts::Result<Vec<Task>> {
         let rows = if only_mine {
-            let mut sql = String::from("SELECT * FROM tasks WHERE tenant_id = ? AND assignee_id = ?");
+            let mut sql =
+                String::from("SELECT * FROM tasks WHERE tenant_id = ? AND assignee_id = ?");
             if status.is_some() {
                 sql.push_str(" AND status = ?");
             }
@@ -143,11 +165,21 @@ impl Kernel {
         let now = ids::now_rfc3339();
         let mut tx = self.pool().begin().await.map_err(map_db_err)?;
         sqlx::query("UPDATE tasks SET status = ?, updated_at = ? WHERE tenant_id = ? AND id = ?")
-            .bind(status).bind(&now).bind(&ctx.tenant_id).bind(id)
-            .execute(&mut *tx).await.map_err(map_db_err)?;
-        let ev = event_from(ctx, "task.update", Some("task"), Some(id),
+            .bind(status)
+            .bind(&now)
+            .bind(&ctx.tenant_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db_err)?;
+        let ev = event_from(
+            ctx,
+            "task.update",
+            Some("task"),
+            Some(id),
             Some(serde_json::json!({"status": task.status})),
-            Some(serde_json::json!({"status": status})));
+            Some(serde_json::json!({"status": status})),
+        );
         insert_audit(&mut tx, &ev).await?;
         tx.commit().await.map_err(map_db_err)?;
         self.get_task(ctx, id).await

@@ -7,3 +7,4 @@
 node_modules/
 web/dist/
 build.log
+.DS_Store

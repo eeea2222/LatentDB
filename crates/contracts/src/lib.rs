@@ -10,10 +10,12 @@
 
 pub mod audit;
 pub mod auth;
+pub mod builder;
 pub mod error;
 pub mod field;
 pub mod flags;
 pub mod ids;
+pub mod migration;
 pub mod object;
 pub mod page;
 pub mod permission;
@@ -22,10 +24,21 @@ pub mod workflow;
 
 pub use audit::{AuditEvent, AuditQuery};
 pub use auth::{ActorType, AuthContext, Source};
+pub use builder::{
+    ApprovalRule, ApprovalRuleKind, BuilderDefinition, BuilderDraft, BuilderRelation,
+    BuilderStatus, BuilderTemplate, BuilderValidationResult, InstallTemplateRequest,
+    InstallTemplateResult, PublishBuilderDraftRequest, PublishBuilderResult, RelationKind,
+    SaveBuilderDraftRequest, ValidationIssue,
+};
 pub use error::{ApiError, ErrorBody, ErrorCode, Result};
 pub use field::{FieldDefinition, FieldType};
 pub use flags::FeatureFlags;
 pub use ids::{new_id, now, now_rfc3339, to_rfc3339};
+pub use migration::{
+    ConflictKind, FieldMapping, MappingStatus, MigrationConflict, MigrationPlan, MigrationReport,
+    MigrationSession, MigrationStatus, MigrationSummary, ObjectMapping, SystemKind, SystemObject,
+    SystemSnapshot,
+};
 pub use object::ObjectTypeDef;
 pub use page::{ListResponse, Page, RecordFilter};
 pub use permission::{

@@ -46,8 +46,15 @@ pub async fn retrieve(
         // `list_records` is the permission boundary: results are already scoped
         // and field-projected for this actor.
         let filter = RecordFilter {
-            search: if query.is_empty() { None } else { Some(query.to_string()) },
-            page: latentdb_contracts::Page { limit: limit as i64, offset: 0 },
+            search: if query.is_empty() {
+                None
+            } else {
+                Some(query.to_string())
+            },
+            page: latentdb_contracts::Page {
+                limit: limit as i64,
+                offset: 0,
+            },
             ..Default::default()
         };
         let Ok(list) = kernel.list_records(ctx, ot, &filter).await else {
@@ -62,7 +69,7 @@ pub async fn retrieve(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| format!("{ot}:{}", rec.id));
-            let snippet = snippet_of(&rec);
+            let snippet = snippet_of(&rec, otype.as_ref());
             let score = score(query, &title, &snippet);
             docs.push(RetrievedDoc {
                 source_id: rec.id,
@@ -74,14 +81,27 @@ pub async fn retrieve(
         }
     }
 
-    docs.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    docs.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     docs.truncate(limit);
     Ok(docs)
 }
 
-fn snippet_of(rec: &latentdb_contracts::Record) -> String {
+fn snippet_of(
+    rec: &latentdb_contracts::Record,
+    object_type: Option<&latentdb_contracts::ObjectTypeDef>,
+) -> String {
     let mut parts = Vec::new();
     for (k, v) in &rec.data {
+        let Some(field) = object_type.and_then(|ot| ot.field(k)) else {
+            continue;
+        };
+        if !field.ai_visible {
+            continue;
+        }
         let val = match v {
             serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Null => continue,

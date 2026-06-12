@@ -3,7 +3,7 @@
 //! Experimental and optional subsystems are gated here. The defaults encode a
 //! key platform rule: **AI and all acceleration are optional**. The core platform
 //! must boot and pass its tests with every experimental flag off, falling back to
-//! safe baselines (mock AI provider, keyword search, primary-DB analytics, CPU
+//! safe baselines (configured AI provider, keyword search, primary-DB analytics, CPU
 //! compute).
 
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,7 @@ pub struct FeatureFlags {
 impl Default for FeatureFlags {
     fn default() -> Self {
         Self {
-            // Safe, fully-functional defaults: AI on (mock provider), advanced
+            // Safe, fully-functional defaults: AI on (provider must be configured),
             // permissions + usage metering on, all hardware acceleration and the
             // cloud control plane off until explicitly enabled.
             enable_ai_agents: true,
@@ -110,7 +110,10 @@ impl FeatureFlags {
 
 fn env_bool(key: &str, default: bool) -> bool {
     match std::env::var(key) {
-        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
         Err(_) => default,
     }
 }

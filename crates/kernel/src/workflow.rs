@@ -18,7 +18,8 @@ impl Kernel {
         ctx: &AuthContext,
         def: &WorkflowDef,
     ) -> latentdb_contracts::Result<WorkflowDef> {
-        self.authorize(ctx, Action::Configure, "workflows", None).await?;
+        self.authorize(ctx, Action::Configure, "workflows", None)
+            .await?;
         validate_workflow(def)?;
         let now = ids::now_rfc3339();
         let definition_json = serde_json::to_string(def)
@@ -43,8 +44,14 @@ impl Kernel {
         .execute(&mut *tx)
         .await
         .map_err(map_db_err)?;
-        let ev = event_from(ctx, "workflow.create", Some("workflow"), Some(&def.key), None,
-            Some(serde_json::json!({"object_type": def.object_type, "states": def.states.len()})));
+        let ev = event_from(
+            ctx,
+            "workflow.create",
+            Some("workflow"),
+            Some(&def.key),
+            None,
+            Some(serde_json::json!({"object_type": def.object_type, "states": def.states.len()})),
+        );
         insert_audit(&mut tx, &ev).await?;
         tx.commit().await.map_err(map_db_err)?;
         Ok(def.clone())
@@ -66,11 +73,12 @@ impl Kernel {
         ctx: &AuthContext,
     ) -> latentdb_contracts::Result<Vec<WorkflowDef>> {
         self.authorize(ctx, Action::Read, "workflows", None).await?;
-        let rows = sqlx::query("SELECT definition_json FROM workflows WHERE tenant_id = ? ORDER BY key")
-            .bind(&ctx.tenant_id)
-            .fetch_all(self.pool())
-            .await
-            .map_err(map_db_err)?;
+        let rows =
+            sqlx::query("SELECT definition_json FROM workflows WHERE tenant_id = ? ORDER BY key")
+                .bind(&ctx.tenant_id)
+                .fetch_all(self.pool())
+                .await
+                .map_err(map_db_err)?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
             let json: String = row.try_get("definition_json").map_err(map_db_err)?;
@@ -88,12 +96,13 @@ impl Kernel {
         tenant_id: &str,
         key: &str,
     ) -> latentdb_contracts::Result<Option<WorkflowDef>> {
-        let row = sqlx::query("SELECT definition_json FROM workflows WHERE tenant_id = ? AND key = ?")
-            .bind(tenant_id)
-            .bind(key)
-            .fetch_optional(self.pool())
-            .await
-            .map_err(map_db_err)?;
+        let row =
+            sqlx::query("SELECT definition_json FROM workflows WHERE tenant_id = ? AND key = ?")
+                .bind(tenant_id)
+                .bind(key)
+                .fetch_optional(self.pool())
+                .await
+                .map_err(map_db_err)?;
         match row {
             None => Ok(None),
             Some(row) => {
@@ -119,10 +128,14 @@ impl Kernel {
 
 fn validate_workflow(def: &WorkflowDef) -> latentdb_contracts::Result<()> {
     if def.key.trim().is_empty() || def.object_type.trim().is_empty() {
-        return Err(ApiError::validation("workflow key and object_type are required"));
+        return Err(ApiError::validation(
+            "workflow key and object_type are required",
+        ));
     }
     if def.state(&def.initial_state).is_none() {
-        return Err(ApiError::validation("initial_state must be one of the states"));
+        return Err(ApiError::validation(
+            "initial_state must be one of the states",
+        ));
     }
     for t in &def.transitions {
         if def.state(&t.from).is_none() || def.state(&t.to).is_none() {

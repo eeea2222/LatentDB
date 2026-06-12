@@ -82,7 +82,8 @@ impl Agents {
             serde_json::to_string_pretty(&rec.data).unwrap_or_default(),
             rec.id
         );
-        self.finish(kernel, ctx, "ai.answer", &prompt, vec![doc]).await
+        self.finish(kernel, ctx, "ai.answer", &prompt, vec![doc])
+            .await
     }
 
     /// Finance agent — overdue invoices + cashflow risk, grounded in invoice ids.
@@ -135,7 +136,9 @@ impl Agents {
         let products = self.list(kernel, ctx, "product").await;
         let mut low = Vec::new();
         for p in &products {
-            let qty = num_field(p, "quantity").or_else(|| num_field(p, "on_hand")).unwrap_or(0.0);
+            let qty = num_field(p, "quantity")
+                .or_else(|| num_field(p, "on_hand"))
+                .unwrap_or(0.0);
             let reorder = num_field(p, "reorder_point").unwrap_or(0.0);
             if reorder > 0.0 && qty < reorder {
                 low.push(p.id.clone());
@@ -148,7 +151,13 @@ impl Agents {
         );
         let docs = low
             .iter()
-            .map(|id| RetrievedDoc { source_id: id.clone(), object_type: "product".into(), title: id.clone(), snippet: "low stock".into(), score: 1.0 })
+            .map(|id| RetrievedDoc {
+                source_id: id.clone(),
+                object_type: "product".into(),
+                title: id.clone(),
+                snippet: "low stock".into(),
+                score: 1.0,
+            })
             .collect();
         self.finish(kernel, ctx, "ai.answer", &facts, docs).await
     }
@@ -166,9 +175,15 @@ impl Agents {
         let mut at_risk_value = 0.0;
         for d in &deals {
             let stage = str_field(d, "stage").unwrap_or_default();
-            let closed = matches!(stage.as_str(), "won" | "lost" | "closed_won" | "closed_lost");
+            let closed = matches!(
+                stage.as_str(),
+                "won" | "lost" | "closed_won" | "closed_lost"
+            );
             let close_date = str_field(d, "close_date");
-            let overdue = close_date.as_deref().map(|c| c < today.as_str()).unwrap_or(false);
+            let overdue = close_date
+                .as_deref()
+                .map(|c| c < today.as_str())
+                .unwrap_or(false);
             if !closed && (stage == "at_risk" || overdue) {
                 at_risk_value += num_field(d, "amount").unwrap_or(0.0);
                 at_risk.push(d.id.clone());
@@ -182,7 +197,13 @@ impl Agents {
         );
         let docs = at_risk
             .iter()
-            .map(|id| RetrievedDoc { source_id: id.clone(), object_type: "deal".into(), title: id.clone(), snippet: "at-risk deal".into(), score: 1.0 })
+            .map(|id| RetrievedDoc {
+                source_id: id.clone(),
+                object_type: "deal".into(),
+                title: id.clone(),
+                snippet: "at-risk deal".into(),
+                score: 1.0,
+            })
             .collect();
         self.finish(kernel, ctx, "ai.answer", &facts, docs).await
     }
@@ -208,7 +229,9 @@ impl Agents {
                 "Revenue is at risk this period for two reasons:\n1) {}\n2) {}",
                 fin.text, sales.text
             );
-            return self.finish_with(kernel, ctx, &facts, citations, sources).await;
+            return self
+                .finish_with(kernel, ctx, &facts, citations, sources)
+                .await;
         }
         if q.contains("overdue") || (q.contains("cashflow") || q.contains("cash flow")) {
             return self.finance_cashflow_risk(kernel, ctx).await;
@@ -234,7 +257,10 @@ impl Agents {
                 )
                 .await
                 .unwrap_or(0.0);
-            let facts = format!("Recognized revenue (paid invoices) totals {} minor units.", revenue as i64);
+            let facts = format!(
+                "Recognized revenue (paid invoices) totals {} minor units.",
+                revenue as i64
+            );
             return self.finish(kernel, ctx, "ai.answer", &facts, vec![]).await;
         }
         // Fallback to general retrieval-grounded Q&A.
@@ -249,7 +275,13 @@ impl Agents {
         ctx: &AuthContext,
         object_type: &str,
     ) -> Vec<latentdb_contracts::Record> {
-        let filter = RecordFilter { page: latentdb_contracts::Page { limit: 500, offset: 0 }, ..Default::default() };
+        let filter = RecordFilter {
+            page: latentdb_contracts::Page {
+                limit: 500,
+                offset: 0,
+            },
+            ..Default::default()
+        };
         kernel
             .list_records(ctx, object_type, &filter)
             .await
@@ -322,13 +354,21 @@ fn render_sources(docs: &[RetrievedDoc]) -> String {
         return "(no accessible records matched)".to_string();
     }
     docs.iter()
-        .map(|d| format!("- [{}] {} ({}): {}", d.source_id, d.title, d.object_type, d.snippet))
+        .map(|d| {
+            format!(
+                "- [{}] {} ({}): {}",
+                d.source_id, d.title, d.object_type, d.snippet
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
 fn str_field(rec: &latentdb_contracts::Record, key: &str) -> Option<String> {
-    rec.data.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    rec.data
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn num_field(rec: &latentdb_contracts::Record, key: &str) -> Option<f64> {

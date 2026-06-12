@@ -81,7 +81,10 @@ pub(crate) async fn connect(config: &StoreConfig) -> latentdb_contracts::Result<
 pub(crate) fn map_db_err(e: sqlx::Error) -> ApiError {
     let msg = e.to_string();
     if msg.contains("UNIQUE constraint failed") {
-        ApiError::new(ErrorCode::Conflict, "a record with these values already exists")
+        ApiError::new(
+            ErrorCode::Conflict,
+            "a record with these values already exists",
+        )
     } else if msg.contains("FOREIGN KEY constraint failed") {
         ApiError::new(ErrorCode::Validation, "referenced entity does not exist")
     } else {
@@ -213,6 +216,18 @@ CREATE TABLE IF NOT EXISTS object_types (
     module TEXT,
     fields_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
+    UNIQUE(tenant_id, key)
+);
+-- >>
+CREATE TABLE IF NOT EXISTS builder_drafts (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    status TEXT NOT NULL DEFAULT 'draft',
+    key TEXT NOT NULL,
+    definition_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    published_at TEXT,
     UNIQUE(tenant_id, key)
 );
 -- >>
@@ -420,5 +435,16 @@ CREATE TABLE IF NOT EXISTS settings (
     value_json TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY(tenant_id, key)
+);
+-- >>
+CREATE TABLE IF NOT EXISTS migration_sessions (
+    tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
+    status TEXT NOT NULL DEFAULT 'booted_old',
+    active_system TEXT NOT NULL DEFAULT 'old',
+    selected_system_key TEXT,
+    snapshot_json TEXT NOT NULL DEFAULT '{}',
+    last_report_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 "#;

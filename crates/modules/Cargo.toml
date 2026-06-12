@@ -10,5 +10,7 @@ latentdb-kernel.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-rand.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }

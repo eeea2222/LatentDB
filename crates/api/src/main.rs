@@ -2,20 +2,20 @@
 //!
 //! Commands:
 //!   latentdb serve       Start the HTTP API (default).
-//!   latentdb seed-demo    Seed the Acme Robotics demo tenant.
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cmd = std::env::args().nth(1).unwrap_or_else(|| "serve".to_string());
+    let cmd = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "serve".to_string());
     match cmd.as_str() {
         "serve" => latentdb_api::run().await,
-        "seed-demo" => latentdb_api::seed_demo().await,
         "help" | "--help" | "-h" => {
-            println!("latentdb <serve|seed-demo>");
+            println!("latentdb <serve>");
             Ok(())
         }
         other => {
-            eprintln!("unknown command: {other}\nusage: latentdb <serve|seed-demo>");
+            eprintln!("unknown command: {other}\nusage: latentdb <serve>");
             std::process::exit(2);
         }
     }

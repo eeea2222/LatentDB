@@ -13,8 +13,13 @@ fn obj(v: Value) -> Map<String, Value> {
 }
 
 async fn admin(k: &Kernel) -> AuthContext {
-    k.bootstrap_tenant("Acme", "acme", "a@acme.com", "Admin", "pw-123456").await.unwrap();
-    let l = k.login("acme", "a@acme.com", "pw-123456", "r", Source::Api).await.unwrap();
+    k.bootstrap_tenant("TestCo", "testco", "a@testco.test", "Admin", "pw-123456")
+        .await
+        .unwrap();
+    let l = k
+        .login("testco", "a@testco.test", "pw-123456", "r", Source::Api)
+        .await
+        .unwrap();
     k.authenticate(&l.token, "r", Source::Api).await.unwrap()
 }
 
@@ -45,11 +50,16 @@ async fn setup_invoices(k: &Kernel, ctx: &AuthContext) {
         ("INV-3", 30000, "draft", 7000),
     ];
     for (num, amount, status, margin) in rows {
-        k.create_record(ctx, &NewRecord {
-            object_type: "invoice".into(),
-            data: obj(json!({"number": num, "amount": amount, "status": status, "margin": margin})),
-            workspace_id: None,
-        })
+        k.create_record(
+            ctx,
+            &NewRecord {
+                object_type: "invoice".into(),
+                data: obj(
+                    json!({"number": num, "amount": amount, "status": status, "margin": margin}),
+                ),
+                workspace_id: None,
+            },
+        )
         .await
         .unwrap();
     }
@@ -61,7 +71,10 @@ async fn aggregate_sum_and_filter() {
     let ctx = admin(&k).await;
     setup_invoices(&k, &ctx).await;
 
-    let total = k.aggregate(&ctx, "invoice", AggOp::Sum, Some("amount"), vec![]).await.unwrap();
+    let total = k
+        .aggregate(&ctx, "invoice", AggOp::Sum, Some("amount"), vec![])
+        .await
+        .unwrap();
     assert_eq!(total, 60000.0);
 
     // Only paid invoices.
@@ -71,13 +84,20 @@ async fn aggregate_sum_and_filter() {
             "invoice",
             AggOp::Sum,
             Some("amount"),
-            vec![FieldFilter { field: "status".into(), op: ConditionOp::Eq, value: json!("paid") }],
+            vec![FieldFilter {
+                field: "status".into(),
+                op: ConditionOp::Eq,
+                value: json!("paid"),
+            }],
         )
         .await
         .unwrap();
     assert_eq!(paid, 30000.0);
 
-    let count = k.aggregate(&ctx, "invoice", AggOp::Count, None, vec![]).await.unwrap();
+    let count = k
+        .aggregate(&ctx, "invoice", AggOp::Count, None, vec![])
+        .await
+        .unwrap();
     assert_eq!(count, 3.0);
 }
 
@@ -114,20 +134,43 @@ async fn metrics_are_permission_aware_for_restricted_fields() {
     setup_invoices(&k, &adm).await;
 
     // Admin can aggregate the restricted margin.
-    let admin_margin = k.aggregate(&adm, "invoice", AggOp::Sum, Some("margin"), vec![]).await.unwrap();
+    let admin_margin = k
+        .aggregate(&adm, "invoice", AggOp::Sum, Some("margin"), vec![])
+        .await
+        .unwrap();
     assert_eq!(admin_margin, 14000.0);
 
     // A plain member cannot see `margin`; aggregating it yields 0 (projected out
     // before the numbers are computed) — the report cannot leak restricted data.
-    k.create_user(&adm, "m@acme.com", "M", "pw-member-1", &["member".into()]).await.unwrap();
-    let l = k.login("acme", "m@acme.com", "pw-member-1", "r", Source::Api).await.unwrap();
+    k.create_user(
+        &adm,
+        "m@testco.test",
+        "M",
+        "pw-member-1",
+        &["member".into()],
+    )
+    .await
+    .unwrap();
+    let l = k
+        .login("testco", "m@testco.test", "pw-member-1", "r", Source::Api)
+        .await
+        .unwrap();
     let mctx = k.authenticate(&l.token, "r", Source::Api).await.unwrap();
 
-    let member_margin = k.aggregate(&mctx, "invoice", AggOp::Sum, Some("margin"), vec![]).await.unwrap();
-    assert_eq!(member_margin, 0.0, "member must not aggregate restricted margin");
+    let member_margin = k
+        .aggregate(&mctx, "invoice", AggOp::Sum, Some("margin"), vec![])
+        .await
+        .unwrap();
+    assert_eq!(
+        member_margin, 0.0,
+        "member must not aggregate restricted margin"
+    );
 
     // But the member CAN aggregate the non-restricted amount.
-    let member_amount = k.aggregate(&mctx, "invoice", AggOp::Sum, Some("amount"), vec![]).await.unwrap();
+    let member_amount = k
+        .aggregate(&mctx, "invoice", AggOp::Sum, Some("amount"), vec![])
+        .await
+        .unwrap();
     assert_eq!(member_amount, 60000.0);
 }
 

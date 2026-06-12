@@ -148,13 +148,19 @@ pub(crate) fn field_permitted(
     object_type: &ObjectTypeDef,
     field_key: &str,
 ) -> bool {
-    let restricted = object_type.field(field_key).map(|f| f.restricted).unwrap_or(false);
+    let restricted = object_type
+        .field(field_key)
+        .map(|f| f.restricted)
+        .unwrap_or(false);
     if !restricted {
         return true;
     }
-    grants
-        .iter()
-        .any(|g| g.fields.as_ref().map(|fr| fr.permits(field_key)).unwrap_or(false))
+    grants.iter().any(|g| {
+        g.fields
+            .as_ref()
+            .map(|fr| fr.permits(field_key))
+            .unwrap_or(false)
+    })
 }
 
 impl Kernel {
@@ -185,8 +191,13 @@ impl Kernel {
         if allowed {
             Ok(())
         } else {
-            self.audit_denial(ctx, action.as_str(), resource, target.map(|r| r.id.as_str()))
-                .await;
+            self.audit_denial(
+                ctx,
+                action.as_str(),
+                resource,
+                target.map(|r| r.id.as_str()),
+            )
+            .await;
             Err(ApiError::forbidden(format!(
                 "not permitted: {} on {}",
                 action.as_str(),

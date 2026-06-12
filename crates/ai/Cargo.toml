@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 default = []
 # Real HTTP calls to an OpenAI-compatible endpoint (OpenAI / LM Studio / Ollama).
-# Off by default: the deterministic mock provider keeps the platform fully
+# Off by default: the deterministic local provider keeps the platform fully
 # offline and AI optional.
 openai = ["dep:reqwest"]
 

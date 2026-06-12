@@ -10,9 +10,13 @@ use crate::error::ApiJson;
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use latentdb_ai::{action, AgentAction, AiAnswer, AiEngine};
 use latentdb_contracts::{
-    AuditQuery, AuthContext, ListResponse, NewRecord, ObjectTypeDef, PermissionGrant, Record,
-    RecordFilter, RecordPatch, Source, WorkflowDef,
+    AuditQuery, AuthContext, BuilderDraft, BuilderTemplate, BuilderValidationResult,
+    InstallTemplateRequest, InstallTemplateResult, ListResponse, MigrationPlan, MigrationReport,
+    MigrationSession, NewRecord, ObjectTypeDef, PermissionGrant, PublishBuilderDraftRequest,
+    PublishBuilderResult, Record, RecordFilter, RecordPatch, SaveBuilderDraftRequest, Source,
+    SystemKind, WorkflowDef,
 };
 use latentdb_kernel::analytics::{Dashboard, ReportDef, ReportResult};
 use latentdb_kernel::approval::Approval;
@@ -22,9 +26,9 @@ use latentdb_kernel::task::Task;
 use latentdb_kernel::tenant::{BootstrapResult, Organization, Tenant};
 use latentdb_kernel::transition::TransitionResult;
 use latentdb_kernel::Kernel;
-use latentdb_ai::{action, AgentAction, AiAnswer, AiEngine};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use tower_http::cors::CorsLayer;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -50,16 +54,60 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/users/:id", get(get_user))
         .route("/v1/roles", get(list_roles).post(create_role))
         .route("/v1/api-keys", post(create_api_key))
-        .route("/v1/object-types", get(list_object_types).post(create_object_type))
-        .route("/v1/object-types/:key", get(get_object_type).put(update_object_type))
+        .route(
+            "/v1/builder/drafts",
+            get(list_builder_drafts).post(save_builder_draft),
+        )
+        .route("/v1/builder/drafts/:id", get(get_builder_draft))
+        .route(
+            "/v1/builder/drafts/:id/validate",
+            post(validate_builder_draft),
+        )
+        .route(
+            "/v1/builder/drafts/:id/publish-preview",
+            get(builder_publish_preview),
+        )
+        .route(
+            "/v1/builder/drafts/:id/publish",
+            post(publish_builder_draft),
+        )
+        .route("/v1/builder/templates", get(list_builder_templates))
+        .route(
+            "/v1/builder/templates/install",
+            post(install_builder_template),
+        )
+        // --- first-run migration (onboarding) ---
+        .route("/v1/migration", get(get_migration))
+        .route("/v1/migration/start", post(start_migration))
+        .route("/v1/migration/select", post(select_target_system))
+        .route("/v1/migration/active", post(set_active_system))
+        .route("/v1/migration/plan", get(plan_migration))
+        .route("/v1/migration/report", get(migration_report))
+        .route(
+            "/v1/object-types",
+            get(list_object_types).post(create_object_type),
+        )
+        .route(
+            "/v1/object-types/:key",
+            get(get_object_type).put(update_object_type),
+        )
         .route(
             "/v1/object-types/:key/records",
             get(list_records).post(create_record),
         )
-        .route("/v1/records/:id", get(get_record).patch(update_record).delete(archive_record))
+        .route(
+            "/v1/records/:id",
+            get(get_record).patch(update_record).delete(archive_record),
+        )
         .route("/v1/records/:id/restore", post(restore_record))
-        .route("/v1/records/:id/relations", get(get_relations).post(create_relation))
-        .route("/v1/records/:id/transitions", get(list_transitions).post(do_transition))
+        .route(
+            "/v1/records/:id/relations",
+            get(get_relations).post(create_relation),
+        )
+        .route(
+            "/v1/records/:id/transitions",
+            get(list_transitions).post(do_transition),
+        )
         .route("/v1/workflows", get(list_workflows).post(create_workflow))
         .route("/v1/workflows/:key", get(get_workflow))
         .route("/v1/tasks", get(list_tasks).post(create_task))
@@ -75,6 +123,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/dashboards/:key", get(get_dashboard))
         // --- AI / agents ---
         .route("/v1/ai/ask", post(ai_ask))
+        .route("/v1/ai/capabilities", get(ai_capabilities))
         .route("/v1/ai/bi/ask", post(ai_bi_ask))
         .route("/v1/ai/records/:id/summary", post(ai_summarize))
         .route("/v1/ai/agents/finance/cashflow-risk", post(ai_finance))
@@ -82,6 +131,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/ai/agents/sales/deal-risk", post(ai_sales))
         .route("/v1/ai/actions/dry-run", post(ai_dry_run))
         .route("/v1/ai/actions/execute", post(ai_execute))
+        // --- acceleration status (read-only; works even with no accel built) ---
+        .route("/v1/accel/status", get(accel_status))
+        .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
@@ -120,7 +172,13 @@ async fn login(
 ) -> ApiJson<latentdb_kernel::auth::LoginResult> {
     let res = s
         .kernel
-        .login(&req.tenant, &req.email, &req.password, &latentdb_contracts::ids::new_id(), Source::Api)
+        .login(
+            &req.tenant,
+            &req.email,
+            &req.password,
+            &latentdb_contracts::ids::new_id(),
+            Source::Api,
+        )
         .await?;
     Ok(Json(res))
 }
@@ -130,15 +188,28 @@ struct Ok2 {
     ok: bool,
 }
 
-async fn logout(State(s): State<AppState>, headers: axum::http::HeaderMap) -> ApiJson<Ok2> {
+/// Logout. For a first-time user still in onboarding, the response carries the
+/// non-destructive migration report for whichever system they were booted into.
+#[derive(Serialize)]
+struct LogoutResult {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    migration_report: Option<MigrationReport>,
+}
+
+async fn logout(State(s): State<AppState>, headers: axum::http::HeaderMap) -> ApiJson<LogoutResult> {
+    let mut migration_report = None;
     if let Some(tok) = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
     {
-        s.kernel.logout(tok.trim()).await?;
+        migration_report = s.kernel.logout(tok.trim()).await?;
     }
-    Ok(Json(Ok2 { ok: true }))
+    Ok(Json(LogoutResult {
+        ok: true,
+        migration_report,
+    }))
 }
 
 #[derive(Serialize)]
@@ -186,7 +257,13 @@ async fn bootstrap(
     }
     let res = s
         .kernel
-        .bootstrap_tenant(&req.name, &req.slug, &req.admin_email, &req.admin_name, &req.admin_password)
+        .bootstrap_tenant(
+            &req.name,
+            &req.slug,
+            &req.admin_email,
+            &req.admin_name,
+            &req.admin_password,
+        )
         .await?;
     Ok(Json(res))
 }
@@ -222,7 +299,9 @@ async fn create_user(
     Json(req): Json<CreateUserReq>,
 ) -> ApiJson<User> {
     Ok(Json(
-        s.kernel.create_user(&ctx, &req.email, &req.name, &req.password, &req.roles).await?,
+        s.kernel
+            .create_user(&ctx, &req.email, &req.name, &req.password, &req.roles)
+            .await?,
     ))
 }
 
@@ -254,7 +333,15 @@ async fn create_role(
     Json(req): Json<CreateRoleReq>,
 ) -> ApiJson<latentdb_contracts::Role> {
     Ok(Json(
-        s.kernel.create_role(&ctx, &req.key, &req.name, req.description.as_deref(), &req.grants).await?,
+        s.kernel
+            .create_role(
+                &ctx,
+                &req.key,
+                &req.name,
+                req.description.as_deref(),
+                &req.grants,
+            )
+            .await?,
     ))
 }
 
@@ -284,8 +371,168 @@ async fn create_api_key(
     Json(req): Json<CreateApiKeyReq>,
 ) -> ApiJson<NewApiKey> {
     Ok(Json(
-        s.kernel.create_api_key(&ctx, &req.name, req.principal_id.as_deref(), &req.principal_type).await?,
+        s.kernel
+            .create_api_key(
+                &ctx,
+                &req.name,
+                req.principal_id.as_deref(),
+                &req.principal_type,
+            )
+            .await?,
     ))
+}
+
+// ----------------------------------------------------------------------------
+// Builder
+// ----------------------------------------------------------------------------
+
+async fn list_builder_drafts(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+) -> ApiJson<Vec<BuilderDraft>> {
+    Ok(Json(s.kernel.list_builder_drafts(&ctx).await?))
+}
+
+async fn get_builder_draft(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+) -> ApiJson<BuilderDraft> {
+    Ok(Json(s.kernel.get_builder_draft(&ctx, &id).await?))
+}
+
+async fn save_builder_draft(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<SaveBuilderDraftRequest>,
+) -> ApiJson<BuilderDraft> {
+    Ok(Json(s.kernel.save_builder_draft(&ctx, &req).await?))
+}
+
+async fn validate_builder_draft(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+) -> ApiJson<BuilderValidationResult> {
+    Ok(Json(s.kernel.validate_builder_draft(&ctx, &id).await?))
+}
+
+async fn builder_publish_preview(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+) -> ApiJson<BuilderValidationResult> {
+    Ok(Json(s.kernel.validate_builder_draft(&ctx, &id).await?))
+}
+
+async fn publish_builder_draft(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+    Json(_req): Json<PublishBuilderDraftRequest>,
+) -> ApiJson<PublishBuilderResult> {
+    Ok(Json(s.kernel.publish_builder_draft(&ctx, &id).await?))
+}
+
+async fn list_builder_templates(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+) -> ApiJson<Vec<BuilderTemplate>> {
+    Ok(Json(s.kernel.builder_templates(&ctx).await?))
+}
+
+async fn install_builder_template(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<InstallTemplateRequest>,
+) -> ApiJson<InstallTemplateResult> {
+    Ok(Json(s.kernel.install_builder_template(&ctx, &req).await?))
+}
+
+// ----------------------------------------------------------------------------
+// First-run migration (onboarding)
+// ----------------------------------------------------------------------------
+
+async fn get_migration(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+) -> ApiJson<Option<MigrationSession>> {
+    Ok(Json(s.kernel.get_migration(&ctx).await?))
+}
+
+#[derive(Deserialize)]
+struct StartMigrationReq {
+    /// Optional target template key to select up front (e.g. `"finance"`).
+    #[serde(default)]
+    target_system: Option<String>,
+}
+
+async fn start_migration(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<StartMigrationReq>,
+) -> ApiJson<MigrationSession> {
+    Ok(Json(
+        s.kernel
+            .start_migration(&ctx, req.target_system.as_deref())
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct SelectSystemReq {
+    key: String,
+}
+
+async fn select_target_system(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<SelectSystemReq>,
+) -> ApiJson<MigrationSession> {
+    Ok(Json(s.kernel.select_target_system(&ctx, &req.key).await?))
+}
+
+#[derive(Deserialize)]
+struct SetActiveSystemReq {
+    /// `"old"` to keep booting the old system, `"selected"` to switch onto the
+    /// chosen target. Non-destructive — only re-points the session.
+    system: SystemKind,
+}
+
+async fn set_active_system(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<SetActiveSystemReq>,
+) -> ApiJson<MigrationSession> {
+    Ok(Json(s.kernel.set_active_system(&ctx, req.system).await?))
+}
+
+async fn plan_migration(State(s): State<AppState>, Auth(ctx): Auth) -> ApiJson<MigrationPlan> {
+    Ok(Json(s.kernel.plan_migration(&ctx).await?))
+}
+
+#[derive(Deserialize)]
+struct ReportParams {
+    /// Which system to report on. Defaults to the session's active system.
+    #[serde(default)]
+    system: Option<SystemKind>,
+}
+
+async fn migration_report(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Query(p): Query<ReportParams>,
+) -> ApiJson<MigrationReport> {
+    let for_system = match p.system {
+        Some(sys) => sys,
+        None => s
+            .kernel
+            .get_migration(&ctx)
+            .await?
+            .map(|m| m.active_system)
+            .unwrap_or(SystemKind::Old),
+    };
+    Ok(Json(s.kernel.migration_report(&ctx, for_system).await?))
 }
 
 // ----------------------------------------------------------------------------
@@ -369,7 +616,9 @@ async fn list_records(
     Path(key): Path<String>,
     Query(p): Query<ListParams>,
 ) -> ApiJson<ListResponse<Record>> {
-    Ok(Json(s.kernel.list_records(&ctx, &key, &p.into_filter()).await?))
+    Ok(Json(
+        s.kernel.list_records(&ctx, &key, &p.into_filter()).await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -441,7 +690,11 @@ async fn create_relation(
     Path(id): Path<String>,
     Json(req): Json<RelateReq>,
 ) -> ApiJson<RelationEdge> {
-    Ok(Json(s.kernel.relate(&ctx, &id, &req.to, &req.relation_type).await?))
+    Ok(Json(
+        s.kernel
+            .relate(&ctx, &id, &req.to, &req.relation_type)
+            .await?,
+    ))
 }
 
 async fn get_relations(
@@ -497,7 +750,11 @@ async fn do_transition(
     Path(id): Path<String>,
     Json(req): Json<TransitionReq>,
 ) -> ApiJson<TransitionResult> {
-    Ok(Json(s.kernel.transition_record(&ctx, &id, &req.key, req.reason.as_deref()).await?))
+    Ok(Json(
+        s.kernel
+            .transition_record(&ctx, &id, &req.key, req.reason.as_deref())
+            .await?,
+    ))
 }
 
 // ----------------------------------------------------------------------------
@@ -517,7 +774,11 @@ async fn list_tasks(
     Auth(ctx): Auth,
     Query(p): Query<TaskParams>,
 ) -> ApiJson<Vec<Task>> {
-    Ok(Json(s.kernel.list_tasks(&ctx, p.mine, p.status.as_deref()).await?))
+    Ok(Json(
+        s.kernel
+            .list_tasks(&ctx, p.mine, p.status.as_deref())
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -598,7 +859,11 @@ async fn decide_approval(
     Path(id): Path<String>,
     Json(req): Json<DecideReq>,
 ) -> ApiJson<Approval> {
-    Ok(Json(s.kernel.decide_approval(&ctx, &id, req.approved, req.reason.as_deref()).await?))
+    Ok(Json(
+        s.kernel
+            .decide_approval(&ctx, &id, req.approved, req.reason.as_deref())
+            .await?,
+    ))
 }
 
 // ----------------------------------------------------------------------------
@@ -699,6 +964,78 @@ async fn get_dashboard(
 // AI / agents
 // ----------------------------------------------------------------------------
 
+#[derive(Serialize)]
+struct AiCapabilities {
+    bi_ask: AiOperation,
+    agents: Vec<AiAgentCapability>,
+    actions: Vec<AiOperation>,
+}
+
+#[derive(Serialize)]
+struct AiOperation {
+    key: &'static str,
+    label: &'static str,
+    endpoint: &'static str,
+}
+
+#[derive(Serialize)]
+struct AiAgentCapability {
+    key: &'static str,
+    label: &'static str,
+    action: &'static str,
+    endpoint: &'static str,
+    modules: &'static [&'static str],
+    object_hints: &'static [&'static str],
+}
+
+async fn ai_capabilities(Auth(_ctx): Auth) -> Json<AiCapabilities> {
+    Json(AiCapabilities {
+        bi_ask: AiOperation {
+            key: "bi_ask",
+            label: "BI question",
+            endpoint: "/v1/ai/bi/ask",
+        },
+        agents: vec![
+            AiAgentCapability {
+                key: "finance",
+                label: "Finance",
+                action: "Cashflow risk",
+                endpoint: "/v1/ai/agents/finance/cashflow-risk",
+                modules: &["finance", "erp"],
+                object_hints: &["invoice", "payment", "budget", "account", "bill"],
+            },
+            AiAgentCapability {
+                key: "procurement",
+                label: "Procurement",
+                action: "Supply risk",
+                endpoint: "/v1/ai/agents/procurement/low-stock",
+                modules: &["procurement", "inventory", "scm"],
+                object_hints: &["purchase", "vendor", "product", "inventory", "warehouse", "receipt"],
+            },
+            AiAgentCapability {
+                key: "sales",
+                label: "Sales",
+                action: "Pipeline risk",
+                endpoint: "/v1/ai/agents/sales/deal-risk",
+                modules: &["crm", "sales"],
+                object_hints: &["deal", "lead", "contact", "opportunity", "account"],
+            },
+        ],
+        actions: vec![
+            AiOperation {
+                key: "dry_run",
+                label: "Dry-run action",
+                endpoint: "/v1/ai/actions/dry-run",
+            },
+            AiOperation {
+                key: "execute",
+                label: "Execute approved action",
+                endpoint: "/v1/ai/actions/execute",
+            },
+        ],
+    })
+}
+
 #[derive(Deserialize)]
 struct AskReq {
     question: String,
@@ -711,7 +1048,11 @@ async fn ai_ask(
     Auth(ctx): Auth,
     Json(req): Json<AskReq>,
 ) -> ApiJson<AiAnswer> {
-    Ok(Json(s.ai.agents().ask(&s.kernel, &ctx, &req.question, &req.object_types).await?))
+    Ok(Json(
+        s.ai.agents()
+            .ask(&s.kernel, &ctx, &req.question, &req.object_types)
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -724,7 +1065,11 @@ async fn ai_bi_ask(
     Auth(ctx): Auth,
     Json(req): Json<BiAskReq>,
 ) -> ApiJson<AiAnswer> {
-    Ok(Json(s.ai.agents().bi_answer(&s.kernel, &ctx, &req.question).await?))
+    Ok(Json(
+        s.ai.agents()
+            .bi_answer(&s.kernel, &ctx, &req.question)
+            .await?,
+    ))
 }
 
 async fn ai_summarize(
@@ -732,15 +1077,21 @@ async fn ai_summarize(
     Auth(ctx): Auth,
     Path(id): Path<String>,
 ) -> ApiJson<AiAnswer> {
-    Ok(Json(s.ai.agents().summarize_record(&s.kernel, &ctx, &id).await?))
+    Ok(Json(
+        s.ai.agents().summarize_record(&s.kernel, &ctx, &id).await?,
+    ))
 }
 
 async fn ai_finance(State(s): State<AppState>, Auth(ctx): Auth) -> ApiJson<AiAnswer> {
-    Ok(Json(s.ai.agents().finance_cashflow_risk(&s.kernel, &ctx).await?))
+    Ok(Json(
+        s.ai.agents().finance_cashflow_risk(&s.kernel, &ctx).await?,
+    ))
 }
 
 async fn ai_procurement(State(s): State<AppState>, Auth(ctx): Auth) -> ApiJson<AiAnswer> {
-    Ok(Json(s.ai.agents().procurement_low_stock(&s.kernel, &ctx).await?))
+    Ok(Json(
+        s.ai.agents().procurement_low_stock(&s.kernel, &ctx).await?,
+    ))
 }
 
 async fn ai_sales(State(s): State<AppState>, Auth(ctx): Auth) -> ApiJson<AiAnswer> {
@@ -767,7 +1118,13 @@ async fn ai_execute(
     Auth(ctx): Auth,
     Json(req): Json<ExecuteReq>,
 ) -> ApiJson<Value> {
-    Ok(Json(latentdb_ai::execute(&s.kernel, &ctx, &req.action, req.approved).await?))
+    Ok(Json(
+        latentdb_ai::execute(&s.kernel, &ctx, &req.action, req.approved).await?,
+    ))
+}
+
+async fn accel_status(Auth(_ctx): Auth) -> Json<latentdb_accel::Capabilities> {
+    Json(latentdb_accel::detect())
 }
 
 // Keep `AuthContext` import meaningful for downstream phases.

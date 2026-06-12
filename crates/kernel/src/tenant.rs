@@ -67,14 +67,30 @@ impl Kernel {
 
         let mut tx = self.pool().begin().await.map_err(map_db_err)?;
 
-        sqlx::query("INSERT INTO tenants (id, name, slug, plan, status, created_at) VALUES (?,?,?,?,?,?)")
-            .bind(&tenant_id).bind(name).bind(slug)
-            .bind("standard").bind("active").bind(&now)
-            .execute(&mut *tx).await.map_err(map_db_err)?;
+        sqlx::query(
+            "INSERT INTO tenants (id, name, slug, plan, status, created_at) VALUES (?,?,?,?,?,?)",
+        )
+        .bind(&tenant_id)
+        .bind(name)
+        .bind(slug)
+        .bind("standard")
+        .bind("active")
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db_err)?;
 
-        sqlx::query("INSERT INTO organizations (id, tenant_id, name, slug, created_at) VALUES (?,?,?,?,?)")
-            .bind(&org_id).bind(&tenant_id).bind(name).bind("default").bind(&now)
-            .execute(&mut *tx).await.map_err(map_db_err)?;
+        sqlx::query(
+            "INSERT INTO organizations (id, tenant_id, name, slug, created_at) VALUES (?,?,?,?,?)",
+        )
+        .bind(&org_id)
+        .bind(&tenant_id)
+        .bind(name)
+        .bind("default")
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db_err)?;
 
         // System roles.
         for role in crate::rbac::system_roles() {
@@ -96,8 +112,14 @@ impl Kernel {
             .bind("tenant_admin").bind(&org_id).bind(&now)
             .execute(&mut *tx).await.map_err(map_db_err)?;
 
-        let ev = event_from(&ctx, "tenant.create", Some("tenant"), Some(&tenant_id), None,
-            Some(serde_json::json!({"name": name, "slug": slug, "admin": admin_email})));
+        let ev = event_from(
+            &ctx,
+            "tenant.create",
+            Some("tenant"),
+            Some(&tenant_id),
+            None,
+            Some(serde_json::json!({"name": name, "slug": slug, "admin": admin_email})),
+        );
         insert_audit(&mut tx, &ev).await?;
 
         tx.commit().await.map_err(map_db_err)?;
@@ -144,7 +166,8 @@ impl Kernel {
     /// List all tenants. Platform-admin only (cross-tenant view).
     pub async fn list_tenants(&self, ctx: &AuthContext) -> latentdb_contracts::Result<Vec<Tenant>> {
         if !ctx.is_platform_admin && !ctx.is_system() {
-            self.audit_denial(ctx, "read", "platform:tenants", None).await;
+            self.audit_denial(ctx, "read", "platform:tenants", None)
+                .await;
             return Err(ApiError::forbidden("platform admin required"));
         }
         let rows = sqlx::query("SELECT * FROM tenants ORDER BY created_at DESC")
@@ -170,12 +193,14 @@ impl Kernel {
         &self,
         ctx: &AuthContext,
     ) -> latentdb_contracts::Result<Vec<Organization>> {
-        self.authorize(ctx, Action::Read, "organization", None).await?;
-        let rows = sqlx::query("SELECT * FROM organizations WHERE tenant_id = ? ORDER BY created_at")
-            .bind(&ctx.tenant_id)
-            .fetch_all(self.pool())
-            .await
-            .map_err(map_db_err)?;
+        self.authorize(ctx, Action::Read, "organization", None)
+            .await?;
+        let rows =
+            sqlx::query("SELECT * FROM organizations WHERE tenant_id = ? ORDER BY created_at")
+                .bind(&ctx.tenant_id)
+                .fetch_all(self.pool())
+                .await
+                .map_err(map_db_err)?;
         rows.iter()
             .map(|row| {
                 Ok(Organization {
@@ -195,15 +220,30 @@ impl Kernel {
         ctx: &AuthContext,
         name: &str,
     ) -> latentdb_contracts::Result<Workspace> {
-        self.authorize(ctx, Action::Configure, "organization", None).await?;
+        self.authorize(ctx, Action::Configure, "organization", None)
+            .await?;
         let id = ids::new_id();
         let now = ids::now_rfc3339();
         let mut tx = self.pool().begin().await.map_err(map_db_err)?;
-        sqlx::query("INSERT INTO workspaces (id, tenant_id, org_id, name, created_at) VALUES (?,?,?,?,?)")
-            .bind(&id).bind(&ctx.tenant_id).bind(&ctx.org_id).bind(name).bind(&now)
-            .execute(&mut *tx).await.map_err(map_db_err)?;
-        let ev = event_from(ctx, "workspace.create", Some("workspace"), Some(&id), None,
-            Some(serde_json::json!({"name": name})));
+        sqlx::query(
+            "INSERT INTO workspaces (id, tenant_id, org_id, name, created_at) VALUES (?,?,?,?,?)",
+        )
+        .bind(&id)
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org_id)
+        .bind(name)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db_err)?;
+        let ev = event_from(
+            ctx,
+            "workspace.create",
+            Some("workspace"),
+            Some(&id),
+            None,
+            Some(serde_json::json!({"name": name})),
+        );
         insert_audit(&mut tx, &ev).await?;
         tx.commit().await.map_err(map_db_err)?;
         Ok(Workspace {

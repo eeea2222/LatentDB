@@ -7,7 +7,7 @@
 
 use crate::store::map_db_err;
 use crate::Kernel;
-use latentdb_contracts::{AuthContext, ids};
+use latentdb_contracts::{ids, AuthContext};
 use serde_json::Value;
 use sqlx::{Row, SqliteConnection};
 
@@ -85,7 +85,9 @@ impl Kernel {
                         .map_err(map_db_err)
                         .and_then(|s| {
                             serde_json::from_str(&s).map_err(|e| {
-                                latentdb_contracts::ApiError::internal(format!("event payload: {e}"))
+                                latentdb_contracts::ApiError::internal(format!(
+                                    "event payload: {e}"
+                                ))
                             })
                         })?,
                     created_at: row.try_get("created_at").map_err(map_db_err)?,

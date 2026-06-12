@@ -17,13 +17,22 @@ async fn test_state() -> AppState {
     let kernel = Kernel::open(StoreConfig::memory(), FeatureFlags::default())
         .await
         .unwrap();
-    // Provision the demo tenant + admin directly (the HTTP bootstrap endpoint is
+    // Provision the test tenant + admin directly (the HTTP bootstrap endpoint is
     // platform-admin only; first-tenant provisioning is a CLI/seed concern).
     kernel
-        .bootstrap_tenant("Acme", "acme", "admin@acme.com", "Admin", "pw-123456")
+        .bootstrap_tenant(
+            "TestCo",
+            "testco",
+            "admin@testco.test",
+            "Admin",
+            "pw-123456",
+        )
         .await
         .unwrap();
-    AppState { kernel, ai: latentdb_ai::AiEngine::default() }
+    AppState {
+        kernel,
+        ai: latentdb_ai::AiEngine::default(),
+    }
 }
 
 async fn call(
@@ -62,7 +71,7 @@ async fn login(state: &AppState) -> String {
         "POST",
         "/v1/auth/login",
         None,
-        Some(json!({"tenant": "acme", "email": "admin@acme.com", "password": "pw-123456"})),
+        Some(json!({"tenant": "testco", "email": "admin@testco.test", "password": "pw-123456"})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "login failed: {body}");
@@ -102,7 +111,7 @@ async fn login_me_and_consistent_error_envelope() {
         "POST",
         "/v1/auth/login",
         None,
-        Some(json!({"tenant": "acme", "email": "admin@acme.com", "password": "nope"})),
+        Some(json!({"tenant": "testco", "email": "admin@testco.test", "password": "nope"})),
     )
     .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
@@ -214,14 +223,7 @@ async fn full_slice_over_http() {
     assert_eq!(rec["workflow_state"], "approved");
 
     // Audit trail for the invoice is queryable and includes the create.
-    let (s, audit) = call(
-        &state,
-        "GET",
-        &format!("/v1/audit?record_id={id}"),
-        t,
-        None,
-    )
-    .await;
+    let (s, audit) = call(&state, "GET", &format!("/v1/audit?record_id={id}"), t, None).await;
     assert_eq!(s, StatusCode::OK);
     let actions: Vec<&str> = audit
         .as_array()

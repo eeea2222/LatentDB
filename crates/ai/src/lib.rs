@@ -1,9 +1,9 @@
 //! LatentAI: providers, permission-aware retrieval, agents, and action safety.
 //!
-//! The whole AI layer is optional (gated by `enable_ai_agents`) and offline by
-//! default (the mock provider). It reads enterprise data only through kernel
-//! services, so retrieval cannot bypass permissions, and it mutates only through
-//! the dry-run + approval-gated action planner.
+//! The whole AI layer is optional (gated by `enable_ai_agents`). It reads
+//! enterprise data only through kernel services, so retrieval cannot bypass
+//! permissions, and it mutates only through the dry-run + approval-gated action
+//! planner.
 
 pub mod action;
 pub mod agents;
@@ -13,8 +13,8 @@ pub mod retrieval;
 pub use action::{dry_run, execute, ActionOp, ActionPlan, AgentAction};
 pub use agents::{Agents, AiAnswer};
 pub use provider::{
-    provider_from_env, AiProvider, Completion, CompletionRequest, MockProvider, OpenAiConfig,
-    OpenAiProvider,
+    provider_from_env, AiProvider, Completion, CompletionRequest, OfflineProvider, OpenAiConfig,
+    OpenAiProvider, UnconfiguredProvider,
 };
 pub use retrieval::{retrieve, RetrievedDoc};
 
@@ -25,15 +25,18 @@ pub struct AiEngine {
 }
 
 impl AiEngine {
-    /// Build from environment configuration (mock by default; OpenAI-compatible
-    /// when `LATENTDB_AI_PROVIDER=openai`).
+    /// Build from environment configuration.
     pub fn from_env() -> Self {
-        Self { agents: Agents::new(provider_from_env()) }
+        Self {
+            agents: Agents::new(provider_from_env()),
+        }
     }
 
     /// Build with an explicit provider (used in tests).
     pub fn with_provider(provider: std::sync::Arc<dyn AiProvider>) -> Self {
-        Self { agents: Agents::new(provider) }
+        Self {
+            agents: Agents::new(provider),
+        }
     }
 
     pub fn agents(&self) -> &Agents {

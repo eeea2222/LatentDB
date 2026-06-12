@@ -38,8 +38,11 @@ impl Kernel {
             .await?
             .ok_or_else(|| ApiError::not_found("record not found"))?;
         let resource = format!("object:{}", record.object_type);
-        self.authorize(ctx, Action::Read, &resource, Some(&record)).await?;
-        let otype = self.load_object_type(&ctx.tenant_id, &record.object_type).await?;
+        self.authorize(ctx, Action::Read, &resource, Some(&record))
+            .await?;
+        let otype = self
+            .load_object_type(&ctx.tenant_id, &record.object_type)
+            .await?;
         let Some(wf_key) = otype.workflow_key else {
             return Ok(vec![]);
         };
@@ -87,8 +90,12 @@ impl Kernel {
             .clone();
 
         // Guard: the actor must hold `transition` on the guard resource.
-        let guard_resource = transition.guard_permission.clone().unwrap_or_else(|| resource.clone());
-        self.authorize(ctx, Action::Transition, &guard_resource, Some(&record)).await?;
+        let guard_resource = transition
+            .guard_permission
+            .clone()
+            .unwrap_or_else(|| resource.clone());
+        self.authorize(ctx, Action::Transition, &guard_resource, Some(&record))
+            .await?;
 
         let now = ids::now_rfc3339();
         let mut tx = self.pool().begin().await.map_err(map_db_err)?;
@@ -121,9 +128,14 @@ impl Kernel {
                 &serde_json::json!({"approval_id": approval_id, "transition": transition_key}),
             )
             .await?;
-            let mut ev = event_from(ctx, "workflow.transition.requested", Some(&object_type),
-                Some(record_id), Some(serde_json::json!({"state": current})),
-                Some(serde_json::json!({"requested_state": transition.to})));
+            let mut ev = event_from(
+                ctx,
+                "workflow.transition.requested",
+                Some(&object_type),
+                Some(record_id),
+                Some(serde_json::json!({"state": current})),
+                Some(serde_json::json!({"requested_state": transition.to})),
+            );
             ev.approval_id = Some(approval_id.clone());
             ev.reason = reason.map(|s| s.to_string());
             insert_audit(&mut tx, &ev).await?;
@@ -142,9 +154,14 @@ impl Kernel {
             sqlx::query("UPDATE records SET workflow_state = ?, updated_at = ? WHERE tenant_id = ? AND id = ?")
                 .bind(&transition.to).bind(&now).bind(&ctx.tenant_id).bind(record_id)
                 .execute(&mut *tx).await.map_err(map_db_err)?;
-            let mut ev = event_from(ctx, "workflow.transition", Some(&object_type), Some(record_id),
+            let mut ev = event_from(
+                ctx,
+                "workflow.transition",
+                Some(&object_type),
+                Some(record_id),
                 Some(serde_json::json!({"workflow_state": current})),
-                Some(serde_json::json!({"workflow_state": transition.to})));
+                Some(serde_json::json!({"workflow_state": transition.to})),
+            );
             ev.reason = reason.map(|s| s.to_string());
             insert_audit(&mut tx, &ev).await?;
             emit_on(&mut tx, ctx, "workflow.transitioned",

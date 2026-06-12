@@ -68,6 +68,23 @@ pub struct FieldDefinition {
     /// Whether this field is shown in default list/display views.
     #[serde(default)]
     pub display: bool,
+    /// Builder metadata: whether values should be unique. Enforced by higher
+    /// layers where supported; retained in metadata for UI/governance.
+    #[serde(default)]
+    pub unique: bool,
+    /// Builder metadata: whether this field should be indexed.
+    #[serde(default)]
+    pub indexed: bool,
+    /// Whether AI retrieval may include this field. Defaults to false; builder
+    /// templates explicitly opt safe fields in.
+    #[serde(default)]
+    pub ai_visible: bool,
+    /// Optional role keys allowed to read this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_roles: Vec<String>,
+    /// Optional role keys allowed to write this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write_roles: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub help: Option<String>,
 }
@@ -86,6 +103,11 @@ impl FieldDefinition {
             restricted: false,
             system: false,
             display: false,
+            unique: false,
+            indexed: false,
+            ai_visible: false,
+            read_roles: Vec::new(),
+            write_roles: Vec::new(),
             help: None,
         }
     }
@@ -100,6 +122,10 @@ impl FieldDefinition {
     }
     pub fn restricted(mut self) -> Self {
         self.restricted = true;
+        self
+    }
+    pub fn ai_visible(mut self) -> Self {
+        self.ai_visible = true;
         self
     }
     pub fn options(mut self, opts: &[&str]) -> Self {
@@ -198,7 +224,10 @@ impl FieldDefinition {
             FieldType::Json => { /* any JSON shape is acceptable */ }
             FieldType::RecordRef | FieldType::UserRef | FieldType::FileRef => {
                 if !value.is_string() {
-                    return Err(format!("field '{}' must be a reference id string", self.key));
+                    return Err(format!(
+                        "field '{}' must be a reference id string",
+                        self.key
+                    ));
                 }
             }
             FieldType::Formula => {

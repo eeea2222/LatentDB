@@ -113,7 +113,8 @@ impl Kernel {
             Some(rid) => self.load_record(&ctx.tenant_id, rid).await?,
             None => None,
         };
-        self.authorize(ctx, Action::Approve, &resource, target.as_ref()).await?;
+        self.authorize(ctx, Action::Approve, &resource, target.as_ref())
+            .await?;
 
         let now = ids::now_rfc3339();
         let new_status = if approved { "approved" } else { "rejected" };
@@ -127,9 +128,14 @@ impl Kernel {
                 sqlx::query("UPDATE records SET workflow_state = ?, updated_at = ? WHERE tenant_id = ? AND id = ?")
                     .bind(target_state).bind(&now).bind(&ctx.tenant_id).bind(rid)
                     .execute(&mut *tx).await.map_err(map_db_err)?;
-                let mut ev = event_from(ctx, "workflow.transition", Some(&object_type), Some(rid),
+                let mut ev = event_from(
+                    ctx,
+                    "workflow.transition",
+                    Some(&object_type),
+                    Some(rid),
                     Some(serde_json::json!({"workflow_state": before_state})),
-                    Some(serde_json::json!({"workflow_state": target_state})));
+                    Some(serde_json::json!({"workflow_state": target_state})),
+                );
                 ev.approval_id = Some(approval_id.to_string());
                 ev.reason = reason.map(|s| s.to_string());
                 insert_audit(&mut tx, &ev).await?;
@@ -137,8 +143,14 @@ impl Kernel {
                     serde_json::json!({"object_type": object_type, "id": rid, "to": target_state, "via_approval": approval_id})).await?;
             }
         } else {
-            let mut ev = event_from(ctx, "approval.reject", Some(&object_type),
-                approval.related_record_id.as_deref(), None, None);
+            let mut ev = event_from(
+                ctx,
+                "approval.reject",
+                Some(&object_type),
+                approval.related_record_id.as_deref(),
+                None,
+                None,
+            );
             ev.approval_id = Some(approval_id.to_string());
             ev.reason = reason.map(|s| s.to_string());
             insert_audit(&mut tx, &ev).await?;
@@ -149,7 +161,8 @@ impl Kernel {
             .bind(&ctx.tenant_id).bind(approval_id)
             .execute(&mut *tx).await.map_err(map_db_err)?;
         let task_status = if approved { "done" } else { "cancelled" };
-        self.close_tasks_for_approval(&mut tx, &ctx.tenant_id, approval_id, task_status).await?;
+        self.close_tasks_for_approval(&mut tx, &ctx.tenant_id, approval_id, task_status)
+            .await?;
         tx.commit().await.map_err(map_db_err)?;
 
         approval.status = new_status.to_string();

@@ -1,9 +1,9 @@
 //! AI provider interface and implementations.
 //!
 //! The platform never depends on a specific model vendor. Agents talk to this
-//! trait; the default [`MockProvider`] is deterministic and offline (so tests and
-//! AI-disabled deployments work), and an OpenAI-compatible provider (OpenAI /
-//! LM Studio / Ollama) is available behind the `openai` feature.
+//! trait; the built-in [`OfflineProvider`] is deterministic and local, and an
+//! OpenAI-compatible provider (OpenAI / LM Studio / Ollama) is available behind
+//! the `openai` feature.
 //!
 //! Crucially, *grounding is the agent's job, not the model's*: agents compute the
 //! facts and citations from permission-checked kernel data and pass them to the
@@ -57,29 +57,52 @@ pub trait AiProvider: Send + Sync {
     async fn complete(&self, req: CompletionRequest) -> Result<Completion>;
 }
 
+/// Provider used when no AI backend is configured. This keeps production
+/// deployments from silently returning local placeholder text.
+pub struct UnconfiguredProvider;
+
+#[async_trait]
+impl AiProvider for UnconfiguredProvider {
+    fn name(&self) -> &str {
+        "unconfigured"
+    }
+
+    fn model(&self) -> &str {
+        "none"
+    }
+
+    async fn complete(&self, _req: CompletionRequest) -> Result<Completion> {
+        Err(ApiError::feature_disabled(
+            "AI provider is not configured (set LATENTDB_AI_PROVIDER)",
+        ))
+    }
+}
+
 /// Approximate token count (whitespace words) — good enough for usage metering
-/// and the mock provider.
+/// and local provider accounting.
 pub fn approx_tokens(s: &str) -> u32 {
     s.split_whitespace().count() as u32
 }
 
-/// Deterministic, offline provider. It "narrates" by lightly framing the grounded
-/// facts the agent already assembled — so the answer text always contains the
-/// real, permission-checked content, and tests are stable.
-pub struct MockProvider {
+/// Deterministic local provider. It returns the grounded facts the agent already
+/// assembled, so answer text stays source-faithful when no external provider is
+/// configured.
+pub struct OfflineProvider {
     model: String,
 }
 
-impl Default for MockProvider {
+impl Default for OfflineProvider {
     fn default() -> Self {
-        Self { model: "latentdb-mock-1".to_string() }
+        Self {
+            model: "latentdb-offline-1".to_string(),
+        }
     }
 }
 
 #[async_trait]
-impl AiProvider for MockProvider {
+impl AiProvider for OfflineProvider {
     fn name(&self) -> &str {
-        "mock"
+        "offline"
     }
     fn model(&self) -> &str {
         &self.model
@@ -97,7 +120,7 @@ impl AiProvider for MockProvider {
         Ok(Completion {
             text,
             model: self.model.clone(),
-            provider: "mock".to_string(),
+            provider: "offline".to_string(),
             prompt_tokens: pt,
             completion_tokens: ct,
         })
@@ -113,8 +136,7 @@ pub struct OpenAiConfig {
 }
 
 /// OpenAI-compatible provider. Real HTTP only when the `openai` feature is built;
-/// otherwise it reports a clear `feature_disabled` error and the platform falls
-/// back to the mock provider.
+/// otherwise it reports a clear `feature_disabled` error.
 pub struct OpenAiProvider {
     #[allow(dead_code)]
     config: OpenAiConfig,
@@ -148,7 +170,10 @@ impl AiProvider for OpenAiProvider {
             "temperature": req.temperature,
             "max_tokens": req.max_tokens,
         });
-        let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/chat/completions",
+            self.config.base_url.trim_end_matches('/')
+        );
         let client = reqwest::Client::new();
         let resp = client
             .post(&url)
@@ -177,24 +202,28 @@ impl AiProvider for OpenAiProvider {
     #[cfg(not(feature = "openai"))]
     async fn complete(&self, _req: CompletionRequest) -> Result<Completion> {
         Err(ApiError::feature_disabled(
-            "OpenAI provider was not built (enable the `openai` feature); using mock fallback",
+            "OpenAI provider was not built (enable the `openai` feature)",
         ))
     }
 }
 
-/// Build the configured provider from the environment, falling back to mock.
+/// Build the configured provider from the environment.
 /// `LATENTDB_AI_PROVIDER=openai` with `LATENTDB_AI_BASE_URL`, `LATENTDB_AI_API_KEY`,
-/// `LATENTDB_AI_MODEL` selects the OpenAI-compatible path.
+/// `LATENTDB_AI_MODEL` selects the OpenAI-compatible path. `offline` selects the
+/// deterministic local provider.
 pub fn provider_from_env() -> Arc<dyn AiProvider> {
-    if std::env::var("LATENTDB_AI_PROVIDER").as_deref() == Ok("openai") {
-        let config = OpenAiConfig {
-            base_url: std::env::var("LATENTDB_AI_BASE_URL")
-                .unwrap_or_else(|_| "http://localhost:1234/v1".to_string()),
-            api_key: std::env::var("LATENTDB_AI_API_KEY").unwrap_or_default(),
-            model: std::env::var("LATENTDB_AI_MODEL").unwrap_or_else(|_| "local-model".to_string()),
-        };
-        Arc::new(OpenAiProvider::new(config))
-    } else {
-        Arc::new(MockProvider::default())
+    match std::env::var("LATENTDB_AI_PROVIDER").as_deref() {
+        Ok("openai") => {
+            let config = OpenAiConfig {
+                base_url: std::env::var("LATENTDB_AI_BASE_URL")
+                    .unwrap_or_else(|_| "http://localhost:1234/v1".to_string()),
+                api_key: std::env::var("LATENTDB_AI_API_KEY").unwrap_or_default(),
+                model: std::env::var("LATENTDB_AI_MODEL")
+                    .unwrap_or_else(|_| "local-model".to_string()),
+            };
+            Arc::new(OpenAiProvider::new(config))
+        }
+        Ok("offline") => Arc::new(OfflineProvider::default()),
+        Ok(_) | Err(_) => Arc::new(UnconfiguredProvider),
     }
 }

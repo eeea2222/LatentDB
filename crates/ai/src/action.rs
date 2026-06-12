@@ -96,7 +96,11 @@ pub async fn dry_run(
                 .as_deref()
                 .ok_or_else(|| ApiError::validation("transition action requires record_id"))?;
             let current = kernel.get_record(ctx, id).await?;
-            let to = action.payload.get("key").and_then(|v| v.as_str()).unwrap_or("?");
+            let to = action
+                .payload
+                .get("key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             (
                 Some(serde_json::json!({"workflow_state": current.workflow_state})),
                 Some(serde_json::json!({"transition": to})),
@@ -158,15 +162,15 @@ pub async fn execute(
                 .object_type
                 .clone()
                 .ok_or_else(|| ApiError::validation("create action requires object_type"))?;
-            let data: Map<String, Value> = action
-                .payload
-                .as_object()
-                .cloned()
-                .unwrap_or_default();
+            let data: Map<String, Value> = action.payload.as_object().cloned().unwrap_or_default();
             let rec = kernel
                 .create_record(
                     ctx,
-                    &latentdb_contracts::NewRecord { object_type, data, workspace_id: None },
+                    &latentdb_contracts::NewRecord {
+                        object_type,
+                        data,
+                        workspace_id: None,
+                    },
                 )
                 .await?;
             serde_json::to_value(rec).unwrap_or(Value::Null)
@@ -176,9 +180,10 @@ pub async fn execute(
                 .record_id
                 .clone()
                 .ok_or_else(|| ApiError::validation("update action requires record_id"))?;
-            let data: Map<String, Value> =
-                action.payload.as_object().cloned().unwrap_or_default();
-            let rec = kernel.update_record(ctx, &id, &RecordPatch { data }).await?;
+            let data: Map<String, Value> = action.payload.as_object().cloned().unwrap_or_default();
+            let rec = kernel
+                .update_record(ctx, &id, &RecordPatch { data })
+                .await?;
             serde_json::to_value(rec).unwrap_or(Value::Null)
         }
         ActionOp::Transition => {
@@ -191,7 +196,9 @@ pub async fn execute(
                 .get("key")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ApiError::validation("transition action requires payload.key"))?;
-            let res = kernel.transition_record(ctx, &id, key, Some("ai-action")).await?;
+            let res = kernel
+                .transition_record(ctx, &id, key, Some("ai-action"))
+                .await?;
             serde_json::to_value(res).unwrap_or(Value::Null)
         }
     };

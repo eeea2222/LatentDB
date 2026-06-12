@@ -83,7 +83,10 @@ impl Kernel {
         field: Option<&str>,
         filters: Vec<FieldFilter>,
     ) -> latentdb_contracts::Result<f64> {
-        let filter = RecordFilter { filters, ..Default::default() };
+        let filter = RecordFilter {
+            filters,
+            ..Default::default()
+        };
         let records = self.scan_records(ctx, object_type, &filter).await?;
         Ok(compute(&records, op, field))
     }
@@ -94,7 +97,8 @@ impl Kernel {
         ctx: &AuthContext,
         def: &ReportDef,
     ) -> latentdb_contracts::Result<ReportDef> {
-        self.authorize(ctx, Action::Configure, "report", None).await?;
+        self.authorize(ctx, Action::Configure, "report", None)
+            .await?;
         let json = serde_json::to_string(def)
             .map_err(|e| ApiError::internal(format!("serialize report: {e}")))?;
         let mut tx = self.pool().begin().await.map_err(map_db_err)?;
@@ -112,20 +116,30 @@ impl Kernel {
         .execute(&mut *tx)
         .await
         .map_err(map_db_err)?;
-        let ev = event_from(ctx, "report.save", Some("report"), Some(&def.key), None,
-            Some(serde_json::json!({"object_type": def.object_type, "op": def.op})));
+        let ev = event_from(
+            ctx,
+            "report.save",
+            Some("report"),
+            Some(&def.key),
+            None,
+            Some(serde_json::json!({"object_type": def.object_type, "op": def.op})),
+        );
         insert_audit(&mut tx, &ev).await?;
         tx.commit().await.map_err(map_db_err)?;
         Ok(def.clone())
     }
 
-    pub async fn list_reports(&self, ctx: &AuthContext) -> latentdb_contracts::Result<Vec<ReportDef>> {
+    pub async fn list_reports(
+        &self,
+        ctx: &AuthContext,
+    ) -> latentdb_contracts::Result<Vec<ReportDef>> {
         self.authorize(ctx, Action::Read, "report", None).await?;
-        let rows = sqlx::query("SELECT definition_json FROM reports WHERE tenant_id = ? ORDER BY key")
-            .bind(&ctx.tenant_id)
-            .fetch_all(self.pool())
-            .await
-            .map_err(map_db_err)?;
+        let rows =
+            sqlx::query("SELECT definition_json FROM reports WHERE tenant_id = ? ORDER BY key")
+                .bind(&ctx.tenant_id)
+                .fetch_all(self.pool())
+                .await
+                .map_err(map_db_err)?;
         Ok(rows
             .iter()
             .filter_map(|r| r.try_get::<String, _>("definition_json").ok())
@@ -133,14 +147,19 @@ impl Kernel {
             .collect())
     }
 
-    async fn load_report(&self, ctx: &AuthContext, key: &str) -> latentdb_contracts::Result<ReportDef> {
-        let row = sqlx::query("SELECT definition_json FROM reports WHERE tenant_id = ? AND key = ?")
-            .bind(&ctx.tenant_id)
-            .bind(key)
-            .fetch_optional(self.pool())
-            .await
-            .map_err(map_db_err)?
-            .ok_or_else(|| ApiError::not_found("report not found"))?;
+    async fn load_report(
+        &self,
+        ctx: &AuthContext,
+        key: &str,
+    ) -> latentdb_contracts::Result<ReportDef> {
+        let row =
+            sqlx::query("SELECT definition_json FROM reports WHERE tenant_id = ? AND key = ?")
+                .bind(&ctx.tenant_id)
+                .bind(key)
+                .fetch_optional(self.pool())
+                .await
+                .map_err(map_db_err)?
+                .ok_or_else(|| ApiError::not_found("report not found"))?;
         let json: String = row.try_get("definition_json").map_err(map_db_err)?;
         serde_json::from_str(&json).map_err(|e| ApiError::internal(format!("report def: {e}")))
     }
@@ -163,7 +182,10 @@ impl Kernel {
         ctx: &AuthContext,
         def: &ReportDef,
     ) -> latentdb_contracts::Result<ReportResult> {
-        let filter = RecordFilter { filters: def.filters.clone(), ..Default::default() };
+        let filter = RecordFilter {
+            filters: def.filters.clone(),
+            ..Default::default()
+        };
         let records = self.scan_records(ctx, &def.object_type, &filter).await?;
         let sample_size = records.len() as i64;
 
@@ -186,10 +208,22 @@ impl Kernel {
                     key,
                 })
                 .collect();
-            Ok(ReportResult { key: def.key.clone(), op: def.op, value: None, groups, sample_size })
+            Ok(ReportResult {
+                key: def.key.clone(),
+                op: def.op,
+                value: None,
+                groups,
+                sample_size,
+            })
         } else {
             let value = compute(&records, def.op, def.field.as_deref());
-            Ok(ReportResult { key: def.key.clone(), op: def.op, value: Some(value), groups: vec![], sample_size })
+            Ok(ReportResult {
+                key: def.key.clone(),
+                op: def.op,
+                value: Some(value),
+                groups: vec![],
+                sample_size,
+            })
         }
     }
 
@@ -199,7 +233,8 @@ impl Kernel {
         ctx: &AuthContext,
         dash: &Dashboard,
     ) -> latentdb_contracts::Result<Dashboard> {
-        self.authorize(ctx, Action::Configure, "report", None).await?;
+        self.authorize(ctx, Action::Configure, "report", None)
+            .await?;
         let cards = serde_json::to_string(&dash.cards).unwrap_or_else(|_| "[]".into());
         let mut tx = self.pool().begin().await.map_err(map_db_err)?;
         sqlx::query(
@@ -216,19 +251,31 @@ impl Kernel {
         .execute(&mut *tx)
         .await
         .map_err(map_db_err)?;
-        let ev = event_from(ctx, "dashboard.save", Some("dashboard"), Some(&dash.key), None, None);
+        let ev = event_from(
+            ctx,
+            "dashboard.save",
+            Some("dashboard"),
+            Some(&dash.key),
+            None,
+            None,
+        );
         insert_audit(&mut tx, &ev).await?;
         tx.commit().await.map_err(map_db_err)?;
         Ok(dash.clone())
     }
 
-    pub async fn list_dashboards(&self, ctx: &AuthContext) -> latentdb_contracts::Result<Vec<Dashboard>> {
+    pub async fn list_dashboards(
+        &self,
+        ctx: &AuthContext,
+    ) -> latentdb_contracts::Result<Vec<Dashboard>> {
         self.authorize(ctx, Action::Read, "dashboard", None).await?;
-        let rows = sqlx::query("SELECT key, name, cards_json FROM dashboards WHERE tenant_id = ? ORDER BY key")
-            .bind(&ctx.tenant_id)
-            .fetch_all(self.pool())
-            .await
-            .map_err(map_db_err)?;
+        let rows = sqlx::query(
+            "SELECT key, name, cards_json FROM dashboards WHERE tenant_id = ? ORDER BY key",
+        )
+        .bind(&ctx.tenant_id)
+        .fetch_all(self.pool())
+        .await
+        .map_err(map_db_err)?;
         rows.iter()
             .map(|r| {
                 Ok(Dashboard {
@@ -245,15 +292,21 @@ impl Kernel {
             .collect()
     }
 
-    pub async fn get_dashboard(&self, ctx: &AuthContext, key: &str) -> latentdb_contracts::Result<Dashboard> {
+    pub async fn get_dashboard(
+        &self,
+        ctx: &AuthContext,
+        key: &str,
+    ) -> latentdb_contracts::Result<Dashboard> {
         self.authorize(ctx, Action::Read, "dashboard", None).await?;
-        let row = sqlx::query("SELECT key, name, cards_json FROM dashboards WHERE tenant_id = ? AND key = ?")
-            .bind(&ctx.tenant_id)
-            .bind(key)
-            .fetch_optional(self.pool())
-            .await
-            .map_err(map_db_err)?
-            .ok_or_else(|| ApiError::not_found("dashboard not found"))?;
+        let row = sqlx::query(
+            "SELECT key, name, cards_json FROM dashboards WHERE tenant_id = ? AND key = ?",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(key)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(map_db_err)?
+        .ok_or_else(|| ApiError::not_found("dashboard not found"))?;
         Ok(Dashboard {
             key: row.try_get("key").map_err(map_db_err)?,
             name: row.try_get("name").map_err(map_db_err)?,

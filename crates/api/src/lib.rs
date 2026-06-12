@@ -1,7 +1,7 @@
 //! The LatentDB API crate: assembles kernel services into an Axum application.
 //!
 //! Exposed as a library (so integration tests can drive the router directly) and
-//! consumed by the `latentdb` binary for `serve` / `seed-demo`.
+//! consumed by the `latentdb` binary for `serve`.
 
 pub mod app;
 pub mod auth;
@@ -12,8 +12,7 @@ use latentdb_contracts::FeatureFlags;
 use latentdb_kernel::{Kernel, StoreConfig};
 
 /// Build application state from environment configuration (database URL +
-/// feature flags). Local/on-prem friendly: defaults to a SQLite file and the
-/// mock-friendly default flags.
+/// feature flags). Local/on-prem friendly: defaults to a SQLite file.
 pub async fn build_state() -> anyhow::Result<AppState> {
     let flags = FeatureFlags::from_env();
     let kernel = Kernel::open(StoreConfig::from_env(), flags)
@@ -33,14 +32,6 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!("LatentDB API listening on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-/// Seed (or refresh) the Acme Robotics demo tenant. Implemented in Phase 9 via
-/// the modules crate; stubbed here so the CLI surface is stable.
-pub async fn seed_demo() -> anyhow::Result<()> {
-    init_tracing();
-    let _state = build_state().await?;
-    anyhow::bail!("seed-demo is implemented in a later phase (modules + demo seed)")
 }
 
 fn init_tracing() {

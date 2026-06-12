@@ -65,6 +65,9 @@ impl WorkflowDef {
 
     /// All transitions available from the given state.
     pub fn available_from(&self, current: &str) -> Vec<&Transition> {
-        self.transitions.iter().filter(|t| t.from == current).collect()
+        self.transitions
+            .iter()
+            .filter(|t| t.from == current)
+            .collect()
     }
 }

@@ -17,10 +17,15 @@ impl Kernel {
         ctx: &AuthContext,
         def: &ObjectTypeDef,
     ) -> latentdb_contracts::Result<ObjectTypeDef> {
-        self.authorize(ctx, Action::Configure, "object_types", None).await?;
+        self.authorize(ctx, Action::Configure, "object_types", None)
+            .await?;
         validate_object_type(def)?;
 
-        let id = if def.id.is_empty() { ids::new_id() } else { def.id.clone() };
+        let id = if def.id.is_empty() {
+            ids::new_id()
+        } else {
+            def.id.clone()
+        };
         let now = ids::now_rfc3339();
         let fields_json = serde_json::to_string(&def.fields).unwrap_or_else(|_| "[]".into());
 
@@ -31,8 +36,14 @@ impl Kernel {
             .bind(&def.workflow_key).bind(&def.display_field).bind(&def.module)
             .bind(&fields_json).bind(&now)
             .execute(&mut *tx).await.map_err(map_db_err)?;
-        let ev = event_from(ctx, "object_type.create", Some("object_type"), Some(&def.key), None,
-            Some(serde_json::json!({"key": def.key, "fields": def.fields.len()})));
+        let ev = event_from(
+            ctx,
+            "object_type.create",
+            Some("object_type"),
+            Some(&def.key),
+            None,
+            Some(serde_json::json!({"key": def.key, "fields": def.fields.len()})),
+        );
         insert_audit(&mut tx, &ev).await?;
         tx.commit().await.map_err(map_db_err)?;
 
@@ -48,7 +59,8 @@ impl Kernel {
         key: &str,
         def: &ObjectTypeDef,
     ) -> latentdb_contracts::Result<ObjectTypeDef> {
-        self.authorize(ctx, Action::Configure, "object_types", None).await?;
+        self.authorize(ctx, Action::Configure, "object_types", None)
+            .await?;
         validate_object_type(def)?;
         let before = self.load_object_type(&ctx.tenant_id, key).await?;
         let fields_json = serde_json::to_string(&def.fields).unwrap_or_else(|_| "[]".into());
@@ -62,9 +74,14 @@ impl Kernel {
         if affected == 0 {
             return Err(ApiError::not_found("object type not found"));
         }
-        let ev = event_from(ctx, "object_type.update", Some("object_type"), Some(key),
+        let ev = event_from(
+            ctx,
+            "object_type.update",
+            Some("object_type"),
+            Some(key),
             Some(serde_json::json!({"fields": before.fields.len()})),
-            Some(serde_json::json!({"fields": def.fields.len()})));
+            Some(serde_json::json!({"fields": def.fields.len()})),
+        );
         insert_audit(&mut tx, &ev).await?;
         tx.commit().await.map_err(map_db_err)?;
 
@@ -79,7 +96,8 @@ impl Kernel {
         ctx: &AuthContext,
         key: &str,
     ) -> latentdb_contracts::Result<ObjectTypeDef> {
-        self.authorize(ctx, Action::Read, "object_types", None).await?;
+        self.authorize(ctx, Action::Read, "object_types", None)
+            .await?;
         self.load_object_type(&ctx.tenant_id, key).await
     }
 
@@ -88,7 +106,8 @@ impl Kernel {
         &self,
         ctx: &AuthContext,
     ) -> latentdb_contracts::Result<Vec<ObjectTypeDef>> {
-        self.authorize(ctx, Action::Read, "object_types", None).await?;
+        self.authorize(ctx, Action::Read, "object_types", None)
+            .await?;
         let rows = sqlx::query("SELECT * FROM object_types WHERE tenant_id = ? ORDER BY key")
             .bind(&ctx.tenant_id)
             .fetch_all(self.pool())
@@ -127,7 +146,10 @@ fn validate_object_type(def: &ObjectTypeDef) -> latentdb_contracts::Result<()> {
             return Err(ApiError::validation("field key is required"));
         }
         if !seen.insert(f.key.as_str()) {
-            return Err(ApiError::validation(format!("duplicate field key '{}'", f.key)));
+            return Err(ApiError::validation(format!(
+                "duplicate field key '{}'",
+                f.key
+            )));
         }
         validate_field_def(f)?;
     }

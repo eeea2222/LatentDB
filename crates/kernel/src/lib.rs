@@ -20,8 +20,10 @@ pub mod analytics;
 pub mod approval;
 pub mod audit;
 pub mod auth;
+pub mod builder;
 pub mod event;
 pub mod identity;
+pub mod migration;
 pub mod object;
 pub mod rbac;
 pub mod record;
@@ -47,7 +49,10 @@ impl Kernel {
     /// Open (or create) a kernel backed by the configured store, running schema
     /// migrations. Use `StoreConfig::memory()` for tests, `StoreConfig::file(..)`
     /// for local/on-prem.
-    pub async fn open(config: StoreConfig, flags: FeatureFlags) -> latentdb_contracts::Result<Self> {
+    pub async fn open(
+        config: StoreConfig,
+        flags: FeatureFlags,
+    ) -> latentdb_contracts::Result<Self> {
         let pool = store::connect(&config).await?;
         store::migrate(&pool).await?;
         Ok(Self { pool, flags })

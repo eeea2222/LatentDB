@@ -859,7 +859,6 @@ version = "0.1.0"
 dependencies = [
  "latentdb-contracts",
  "latentdb-kernel",
- "rand 0.8.6",
  "serde",
  "serde_json",
  "tokio",
