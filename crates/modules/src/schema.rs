@@ -37,6 +37,8 @@ fn enum_f(key: &str, label: &str, opts: &[&str]) -> F {
 }
 
 /// All object types installed by the business modules.
+// Sequential pushes keep the per-module sections readable and diffable.
+#[allow(clippy::vec_init_then_push)]
 pub fn object_types() -> Vec<ObjectTypeDef> {
     let mut v = Vec::new();
 

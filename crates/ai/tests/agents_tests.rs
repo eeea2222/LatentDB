@@ -170,8 +170,10 @@ async fn retrieval_respects_field_level_permissions() {
 
 #[tokio::test]
 async fn ai_disabled_returns_feature_disabled() {
-    let mut flags = FeatureFlags::default();
-    flags.enable_ai_agents = false;
+    let flags = FeatureFlags {
+        enable_ai_agents: false,
+        ..FeatureFlags::default()
+    };
     let k = kernel_with(flags).await;
     let ctx = admin(&k).await;
     setup_invoices(&k, &ctx).await;
@@ -269,8 +271,10 @@ async fn execution_is_approval_gated_and_audited() {
 
 #[tokio::test]
 async fn execution_blocked_when_flag_disabled() {
-    let mut flags = FeatureFlags::default();
-    flags.enable_agent_action_execution = false; // AI on, execution off
+    let flags = FeatureFlags {
+        enable_agent_action_execution: false, // AI on, execution off
+        ..FeatureFlags::default()
+    };
     let k = kernel_with(flags).await;
     let ctx = admin(&k).await;
     setup_invoices(&k, &ctx).await;

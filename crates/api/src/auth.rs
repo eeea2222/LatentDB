@@ -35,6 +35,8 @@ impl FromRequestParts<AppState> for Auth {
             .kernel
             .authenticate(&token, &request_id, source)
             .await?;
+        // Per-tenant request metering (flag-gated, best-effort by contract).
+        state.kernel.meter_api_call(&ctx).await;
         Ok(Auth(ctx))
     }
 }

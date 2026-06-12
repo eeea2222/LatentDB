@@ -8,16 +8,12 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BuilderStatus {
+    #[default]
     Draft,
     Validated,
     Published,
-}
-
-impl Default for BuilderStatus {
-    fn default() -> Self {
-        Self::Draft
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

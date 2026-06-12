@@ -6,8 +6,9 @@
 //! back both developer/SDK usage and the admin/business UI.
 
 use crate::auth::Auth;
-use crate::error::ApiJson;
-use axum::extract::{Path, Query, State};
+use crate::error::{ApiJson, AppError};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::http::HeaderValue;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use latentdb_ai::{action, AgentAction, AiAnswer, AiEngine};
@@ -25,6 +26,7 @@ use latentdb_kernel::record::RelationEdge;
 use latentdb_kernel::task::Task;
 use latentdb_kernel::tenant::{BootstrapResult, Organization, Tenant};
 use latentdb_kernel::transition::TransitionResult;
+use latentdb_kernel::usage::UsageMeter;
 use latentdb_kernel::Kernel;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -49,9 +51,12 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/bootstrap", post(bootstrap))
         .route("/v1/tenant", get(get_tenant))
         .route("/v1/tenants", get(list_tenants))
+        .route("/v1/tenants/:id/status", post(set_tenant_status))
         .route("/v1/organizations", get(list_orgs))
+        .route("/v1/usage", get(get_usage))
         .route("/v1/users", get(list_users).post(create_user))
         .route("/v1/users/:id", get(get_user))
+        .route("/v1/users/:id/status", post(set_user_status))
         .route("/v1/roles", get(list_roles).post(create_role))
         .route("/v1/api-keys", post(create_api_key))
         .route(
@@ -133,8 +138,66 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/ai/actions/execute", post(ai_execute))
         // --- acceleration status (read-only; works even with no accel built) ---
         .route("/v1/accel/status", get(accel_status))
-        .layer(CorsLayer::permissive())
+        // Bound request bodies; nothing this API accepts needs more than 1 MiB.
+        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(axum::middleware::from_fn(security_headers_mw))
+        .layer(cors_layer())
         .with_state(state)
+}
+
+/// CORS policy from `LATENTDB_CORS_ALLOWED_ORIGINS` (comma-separated origins).
+/// Unset or `*` keeps the permissive development default — set the variable in
+/// any deployment that serves real customer data.
+fn cors_layer() -> CorsLayer {
+    match std::env::var("LATENTDB_CORS_ALLOWED_ORIGINS") {
+        Ok(raw) if !raw.trim().is_empty() && raw.trim() != "*" => {
+            let origins: Vec<HeaderValue> = raw
+                .split(',')
+                .filter_map(|o| o.trim().parse::<HeaderValue>().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(origins)
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any)
+        }
+        _ => {
+            tracing::warn!(
+                "CORS is permissive (development default); set LATENTDB_CORS_ALLOWED_ORIGINS to lock down origins"
+            );
+            CorsLayer::permissive()
+        }
+    }
+}
+
+/// Stamp a request id (propagating a sane client-supplied `x-request-id`) and
+/// attach standard security headers to every response.
+async fn security_headers_mw(
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| (1..=64).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_graphic()))
+        .map(|s| s.to_string())
+        .unwrap_or_else(latentdb_contracts::ids::new_id);
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        req.headers_mut().insert("x-request-id", value.clone());
+        let mut resp = next.run(req).await;
+        let headers = resp.headers_mut();
+        headers.insert("x-request-id", value);
+        headers.insert(
+            "x-content-type-options",
+            HeaderValue::from_static("nosniff"),
+        );
+        headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+        headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+        headers.insert("cache-control", HeaderValue::from_static("no-store"));
+        resp
+    } else {
+        next.run(req).await
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -197,7 +260,10 @@ struct LogoutResult {
     migration_report: Option<MigrationReport>,
 }
 
-async fn logout(State(s): State<AppState>, headers: axum::http::HeaderMap) -> ApiJson<LogoutResult> {
+async fn logout(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> ApiJson<LogoutResult> {
     let mut migration_report = None;
     if let Some(tok) = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -248,12 +314,31 @@ struct BootstrapReq {
 
 async fn bootstrap(
     State(s): State<AppState>,
-    Auth(ctx): Auth,
+    headers: axum::http::HeaderMap,
     Json(req): Json<BootstrapReq>,
 ) -> ApiJson<BootstrapResult> {
-    // Provisioning a new tenant is a platform-admin action.
-    if !ctx.is_platform_admin {
-        return Err(latentdb_contracts::ApiError::forbidden("platform admin required").into());
+    // First run only: provisioning the very first tenant needs no credential
+    // (none can exist yet). Every later tenant is a platform-admin action —
+    // this is what makes a fresh install usable without a seed script while
+    // keeping multi-tenant provisioning locked down.
+    if s.kernel.tenants_exist().await? {
+        let token = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::trim)
+            .ok_or_else(|| {
+                AppError(latentdb_contracts::ApiError::unauthorized(
+                    "missing bearer token",
+                ))
+            })?;
+        let ctx = s
+            .kernel
+            .authenticate(token, &latentdb_contracts::ids::new_id(), Source::Api)
+            .await?;
+        if !ctx.is_platform_admin {
+            return Err(latentdb_contracts::ApiError::forbidden("platform admin required").into());
+        }
     }
     let res = s
         .kernel
@@ -266,6 +351,41 @@ async fn bootstrap(
         )
         .await?;
     Ok(Json(res))
+}
+
+#[derive(Deserialize)]
+struct StatusReq {
+    status: String,
+}
+
+/// Suspend or re-activate a tenant (platform admin only). Suspension cuts off
+/// all of the tenant's sessions and API keys immediately.
+async fn set_tenant_status(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+    Json(req): Json<StatusReq>,
+) -> ApiJson<Tenant> {
+    Ok(Json(
+        s.kernel.set_tenant_status(&ctx, &id, &req.status).await?,
+    ))
+}
+
+/// Enable or disable a user. Disabling revokes their sessions.
+async fn set_user_status(
+    State(s): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+    Json(req): Json<StatusReq>,
+) -> ApiJson<User> {
+    Ok(Json(
+        s.kernel.set_user_status(&ctx, &id, &req.status).await?,
+    ))
+}
+
+/// Per-tenant usage meters (api calls etc.), most recent period first.
+async fn get_usage(State(s): State<AppState>, Auth(ctx): Auth) -> ApiJson<Vec<UsageMeter>> {
+    Ok(Json(s.kernel.list_usage(&ctx).await?))
 }
 
 async fn get_tenant(State(s): State<AppState>, Auth(ctx): Auth) -> ApiJson<Tenant> {
@@ -1010,7 +1130,14 @@ async fn ai_capabilities(Auth(_ctx): Auth) -> Json<AiCapabilities> {
                 action: "Supply risk",
                 endpoint: "/v1/ai/agents/procurement/low-stock",
                 modules: &["procurement", "inventory", "scm"],
-                object_hints: &["purchase", "vendor", "product", "inventory", "warehouse", "receipt"],
+                object_hints: &[
+                    "purchase",
+                    "vendor",
+                    "product",
+                    "inventory",
+                    "warehouse",
+                    "receipt",
+                ],
             },
             AiAgentCapability {
                 key: "sales",
